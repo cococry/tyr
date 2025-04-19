@@ -1,2 +1,2 @@
-# twr
+# tyr
 terminal emulator for RagnarDE
