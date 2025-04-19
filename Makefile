@@ -1,4 +1,4 @@
-# Makefile for building twr
+# Makefile for building tyr
 # Compiler and flags
 CC = gcc
 CFLAGS = -Wall -Wextra -O2 -DLF_RUNARA -DLF_GLFW
@@ -7,7 +7,7 @@ LDFLAGS = -lpodvig -Lvendor/reif/lib -lleif -lrunara -lGL -lX11 -lfontconfig -lf
 # Directories and files
 SRC_DIR = src
 BIN_DIR = bin
-TARGET = $(BIN_DIR)/twr
+TARGET = $(BIN_DIR)/tyr
 SRC = $(wildcard $(SRC_DIR)/*.c)
 INSTALL_PATH = /usr/bin
 
@@ -21,8 +21,8 @@ $(TARGET): $(SRC)
 
 # Install rule
 install: $(TARGET)
-	install -Dm755 $(TARGET) $(INSTALL_PATH)/twr
-	@echo "Installed to $(INSTALL_PATH)/twr"
+	install -Dm755 $(TARGET) $(INSTALL_PATH)/tyr
+	@echo "Installed to $(INSTALL_PATH)/tyr"
 
 # Clean rule
 clean:
