@@ -1,3 +1,4 @@
+#include <leif/asset_manager.h>
 #define __USE_XOPEN
 #define _XOPEN_SOURCE 600
 #define _GNU_SOURCE
@@ -29,6 +30,99 @@
 #include <leif/task.h>
 #include <runara/runara.h>
 
+
+static const uint32_t dec_special_graphics[128] = {
+    // Note: Only 0x20–0x7E are valid remappings in Special Graphics Mode.
+
+    // 0x20 (space) to 0x2F
+    [' '] = 0x0020, // Space (unchanged)
+    ['!'] = '!',    // unchanged
+    ['"'] = '"',
+    ['#'] = '#',
+    ['$'] = '$',
+    ['%'] = '%',
+    ['&'] = '&',
+    ['\''] = '\'',
+    ['('] = '(',
+    [')'] = ')',
+    ['*'] = '*',
+    ['+'] = '+',
+    [','] = ',',
+    ['-'] = '-',
+    ['.'] = 0x2022, // Bullet (•)
+    ['/'] = '/',    // unchanged
+
+    // 0x30 ('0') to 0x39 ('9')
+    ['0'] = 0x25C6, // Diamond (◆)
+    ['1'] = 0x2592, // Checkerboard (▒)
+    ['2'] = 0x2409, // HT Symbol (␉)
+    ['3'] = 0x240C, // FF Symbol (␌)
+    ['4'] = 0x240D, // CR Symbol (␍)
+    ['5'] = 0x240A, // LF Symbol (␊)
+    ['6'] = 0x00B0, // Degree (°)
+    ['7'] = 0x00B1, // Plus-minus (±)
+    ['8'] = 0x2424, // NL Symbol (␤)
+    ['9'] = 0x240B, // VT Symbol (␋)
+
+    // 0x3A (':') to 0x40 ('@')
+    [':'] = ':',
+    [';'] = ';',
+    ['<'] = 0x2264, // Less-than or equal (≤)
+    ['='] = 0x2260, // Not equal (≠)
+    ['>'] = 0x2265, // Greater-than or equal (≥)
+    ['?'] = '?',
+    ['@'] = '@',
+
+    // 0x41 ('A') to 0x5A ('Z')
+    ['A'] = 'A', ['B'] = 'B', ['C'] = 'C', ['D'] = 'D', ['E'] = 'E', ['F'] = 'F',
+    ['G'] = 0x03C0, // Greek pi (π)
+    ['H'] = 'H', ['I'] = 'I', ['J'] = 'J', ['K'] = 'K', ['L'] = 'L', ['M'] = 'M',
+    ['N'] = 'N', ['O'] = 'O', ['P'] = 'P', ['Q'] = 'Q', ['R'] = 'R', ['S'] = 'S',
+    ['T'] = 'T', ['U'] = 'U', ['V'] = 'V', ['W'] = 'W', ['X'] = 'X', ['Y'] = 'Y',
+    ['Z'] = 'Z',
+
+    // 0x5B ('[') to 0x60 ('`')
+    ['['] = '[', 
+    ['\\'] = '\\',
+    [']'] = ']',
+    ['^'] = '^',
+    ['_'] = '_',
+    ['`'] = 0x25C6, // Diamond (◆) (backtick remaps to same as '0')
+
+    // 0x61 ('a') to 0x7A ('z')
+    ['a'] = 0x2592, // Checkerboard (▒)
+    ['b'] = 0x2409, // HT Symbol (␉)
+    ['c'] = 0x240C, // FF Symbol (␌)
+    ['d'] = 0x240D, // CR Symbol (␍)
+    ['e'] = 0x240A, // LF Symbol (␊)
+    ['f'] = 0x00B0, // Degree (°)
+    ['g'] = 0x00B1, // Plus-minus (±)
+    ['h'] = 0x2424, // NL Symbol (␤)
+    ['i'] = 0x240B, // VT Symbol (␋)
+    ['j'] = 0x2518, // Box-drawing: lower-right (┘)
+    ['k'] = 0x2510, // Box-drawing: upper-right (┐)
+    ['l'] = 0x250C, // Box-drawing: upper-left (┌)
+    ['m'] = 0x2514, // Box-drawing: lower-left (└)
+    ['n'] = 0x253C, // Box-drawing: crossing (┼)
+    ['o'] = 0x23BA, // Horizontal scan line 1 (⎺)
+    ['p'] = 0x23BB, // Horizontal scan line 3 (⎻)
+    ['q'] = 0x2500, // Box-drawing: horizontal (─)
+    ['r'] = 0x23BC, // Horizontal scan line 5 (⎼)
+    ['s'] = 0x23BD, // Horizontal scan line 7 (⎽)
+    ['t'] = 0x251C, // Box-drawing: T left (├)
+    ['u'] = 0x2524, // Box-drawing: T right (┤)
+    ['v'] = 0x2534, // Box-drawing: T down (┴)
+    ['w'] = 0x252C, // Box-drawing: T up (┬)
+    ['x'] = 0x2502, // Box-drawing: vertical (│)
+    ['y'] = 0x2264, // Less-than or equal (≤)
+    ['z'] = 0x2265, // Greater-than or equal (≥)
+
+    // 0x7B ('{') to 0x7E ('~')
+    ['{'] = 0x03C0, // Greek pi (π)
+    ['|'] = 0x2260, // Not equal (≠)
+    ['}'] = 0x00A3, // Pound sign (£)
+    ['~'] = 0x00B7, // Middle dot (·)
+};
 
 #define CLAMP(val, min, max) ((val) < (min) ? (min) : ((val) > (max) ? (max) : (val)))
 
@@ -153,6 +247,12 @@ typedef struct {
   term_font_style_t font_style;
 } cell_t;
 
+typedef enum {
+  CHARSET_ASCII = 0,
+  CHARSET_ALT   = 1, // DEC Special Graphics
+} charset_mode_t;
+
+
 typedef struct {
   lf_ui_state_t* ui;
   pty_data_t* pty;
@@ -174,6 +274,8 @@ typedef struct {
   uint32_t escflags;
 
   uint32_t recentcodepoint;
+
+  charset_mode_t charset;
 } state_t;
 
 static state_t s;
@@ -221,6 +323,70 @@ int utf8encode(uint32_t codepoint, char *out) {
   return 0;
 }
 
+char* get_fallback_font_filepath(uint32_t unicode) {
+    // Initialize Fontconfig if not already done
+    if (!FcInit()) {
+        return NULL;
+    }
+
+    FcPattern *pattern = FcPatternCreate();
+    FcCharSet *charset = FcCharSetCreate();
+
+    FcCharSetAddChar(charset, unicode);
+    FcPatternAddCharSet(pattern, FC_CHARSET, charset);
+
+    FcConfigSubstitute(NULL, pattern, FcMatchPattern);
+    FcDefaultSubstitute(pattern);
+
+    FcResult result;
+    FcPattern *match = FcFontMatch(NULL, pattern, &result);
+
+    char *font_path = NULL;
+
+    if (match) {
+        FcChar8 *filepath = NULL;
+        if (FcPatternGetString(match, FC_FILE, 0, &filepath) == FcResultMatch) {
+            font_path = strdup((char*)filepath);
+        }
+        FcPatternDestroy(match);
+    }
+
+    FcPatternDestroy(pattern);
+    FcCharSetDestroy(charset);
+
+    return font_path; // Remember to free this memory later
+}
+
+
+#include <stdint.h>
+
+uint32_t utf8_to_codepoint(const char *text, uint32_t cluster, uint32_t text_length) {
+    uint32_t codepoint = 0;
+    uint8_t c = text[cluster];
+
+    if (c < 0x80) {
+        // 1-byte UTF-8
+        codepoint = c;
+    } else if ((c & 0xE0) == 0xC0 && (cluster + 1) < text_length) {
+        // 2-byte UTF-8
+        codepoint = ((c & 0x1F) << 6) | (text[cluster + 1] & 0x3F);
+    } else if ((c & 0xF0) == 0xE0 && (cluster + 2) < text_length) {
+        // 3-byte UTF-8
+        codepoint = ((c & 0x0F) << 12) |
+                    ((text[cluster + 1] & 0x3F) << 6) |
+                    (text[cluster + 2] & 0x3F);
+    } else if ((c & 0xF8) == 0xF0 && (cluster + 3) < text_length) {
+        // 4-byte UTF-8
+        codepoint = ((c & 0x07) << 18) |
+                    ((text[cluster + 1] & 0x3F) << 12) |
+                    ((text[cluster + 2] & 0x3F) << 6) |
+                    (text[cluster + 3] & 0x3F);
+    }
+
+    return codepoint;
+}
+
+
 RnTextProps 
 render_text_internal(RnState* state, 
                      const char* text, 
@@ -244,30 +410,33 @@ render_text_internal(RnState* state,
   float textheight = 0;
 
   for (uint32_t i = 0; i < hb_text->glyph_count; i++) {
+    RnFont* actualfont = font; 
     // Get the glyph from the glyph index
     // Get the unicode codepoint of the currently iterated glyph
+    // If the glyph is not within the font, dont render it
+    if(!hb_text->glyph_info[i].codepoint) {
+      hb_text->glyph_info[i].codepoint = ' ';
+    }
     hb_glyph_info_t* inf = hb_text->glyph_info; 
-    uint32_t codepoint = text[inf[i].cluster];
+
+    uint32_t text_length = strlen(text);
+    uint32_t codepoint = utf8_to_codepoint(text, inf[i].cluster, text_length);
 
     RnGlyph glyph =  rn_glyph_from_codepoint(
-      state, font,
+      state, actualfont,
       hb_text->glyph_info[i].codepoint); 
 
     // Check if the unicode codepoint is a new line and advance 
     // to the next line if so
     if(codepoint == line_feed || 
       codepoint == line_seperator || codepoint == paragraph_seperator) {
-      float font_height = font->face->size->metrics.height / 64.0f;
+      float font_height = actualfont->face->size->metrics.height / 64.0f;
       pos.x = start_pos.x;
       pos.y += font_height;
       textheight += font_height;
       continue;
     }
 
-    // If the glyph is not within the font, dont render it
-    if(!hb_text->glyph_info[i].codepoint) {
-      continue;
-    }
 
     // Calculate position
     float x_advance = hb_text->glyph_pos[i].x_advance / 64.0f; 
@@ -282,7 +451,7 @@ render_text_internal(RnState* state,
 
     // Render the glyph
     if(render) {
-      rn_glyph_render(state, glyph, *font, glyph_pos, color);
+      rn_glyph_render(state, glyph, *actualfont, glyph_pos, color);
     }
 
     if(glyph.height > textheight) {
@@ -383,7 +552,7 @@ void writetopty(const char* buf, size_t len) {
     FD_ZERO(&fdread);
     FD_SET(s.pty->masterfd, &fdwrite);
     FD_SET(s.pty->masterfd, &fdread);
-    if (pselect(s.pty->masterfd+1, &fdwrite, &fdread, NULL, NULL, NULL) < 0) {
+    if (pselect(s.pty->masterfd+1, &fdread, &fdwrite, NULL, NULL, NULL) < 0) {
       if (errno == EINTR)
         continue;
       fprintf(stderr, "tyr: pselect() failed: %s\n", strerror(errno));
@@ -446,7 +615,7 @@ void termwrite(const char* buf, size_t len, bool mayecho) {
   while (len > 0) {
     if (*buf == '\r') {
       // If the current character is a carriage return, output CRLF
-      writetopty("\r\n", 2);
+      writetopty("\r\n", 1); // normally \r\n but this is not working so lets just do that
       buf++;
       len--;
     } else {
@@ -687,27 +856,40 @@ void swaprows(uint32_t a, uint32_t b) {
 }
 
 void scrollup(int32_t start, int32_t scrolls) {
-  for (int32_t i = start; i <= s.scrollbottom - scrolls; i++) {
-    swaprows(i, i + scrolls);
-  }
-  for (int32_t y = s.scrollbottom - scrolls + 1; y <= s.scrollbottom; y++) {
-    for (int32_t x = 0; x < s.cols; x++) {
-      cellat(x, y)->codepoint = ' '; 
+    if (scrolls <= 0) return;
+
+    for (int32_t i = 0; i <= s.scrollbottom - start - scrolls; i++) {
+        cell_t* src = getphysrow(start + scrolls + i);
+        cell_t* dest = getphysrow(start + i);
+        memcpy(dest, src, sizeof(cell_t) * s.cols);
     }
-  }
+
+    // Clear lines at the bottom
+    for (int32_t i = s.scrollbottom - scrolls + 1; i <= s.scrollbottom; i++) {
+        cell_t* row = getphysrow(i);
+        for (int32_t x = 0; x < s.cols; x++) {
+            row[x].codepoint = ' ';
+        }
+    }
 }
 
 void scrolldown(int32_t start, int32_t scrolls) {
-  for (int32_t i = s.scrollbottom; i >= start + scrolls; i--) {
-    swaprows(i, i - scrolls);
-  }
-  for (int32_t y = s.scrollbottom - scrolls + 1; y <= s.scrollbottom; y++) {
-    for (int32_t x = 0; x < s.cols; x++) {
-      cellat(x, y)->codepoint = ' '; 
-    }
-  }
-}
+    if (scrolls <= 0) return;
 
+    for (int32_t i = s.scrollbottom - start - scrolls; i >= 0; i--) {
+        cell_t* src = getphysrow(start + i);
+        cell_t* dest = getphysrow(start + i + scrolls);
+        memcpy(dest, src, sizeof(cell_t) * s.cols);
+    }
+
+    // Clear lines at the top
+    for (int32_t i = start; i < start + scrolls; i++) {
+        cell_t* row = getphysrow(i);
+        for (int32_t x = 0; x < s.cols; x++) {
+            row[x].codepoint = ' ';
+        }
+    }
+}
 void newline(bool setx) {
   int32_t x = setx ? 0 : s.cursor.x;
   int32_t y = s.cursor.y;
@@ -716,6 +898,7 @@ void newline(bool setx) {
   } else {
     y++;
   }
+  printf("NEWLINE.\n");
   moveto(x, y);
 }
 
@@ -788,8 +971,8 @@ void settermmode(
           break;
         case 1049:
           handlealtcursor(toggle ? CURSOR_ACTION_STORE : CURSOR_ACTION_RESTORE);
-          [[fallthrough]]; // continue to 47/1047 to clear and toggle
-        case 47: // Alternate screen
+          [[fallthrough]];
+        case 47: 
         case 1047: {
           bool inaltscreen = lf_flag_exists(&s.termmode, TERM_MODE_ALTSCREEN);
           if (inaltscreen) {
@@ -802,7 +985,7 @@ void settermmode(
           if (toggle != inaltscreen)
             togglealtscreen();
 
-          break; // ✅ Always break here, don't fall into 1048 anymore
+          break; 
         }
         case 1048:
           handlealtcursor(toggle ? CURSOR_ACTION_STORE : CURSOR_ACTION_RESTORE);
@@ -852,7 +1035,7 @@ bool handleescseq(uint32_t c) {
     case '^':
     case ']':
     case 'k':
-      // handleosc
+      s.escflags |= ESC_STATE_STR;
       return true;
     case 'n': 
     case 'o':
@@ -862,7 +1045,7 @@ bool handleescseq(uint32_t c) {
     case ')':
     case '*':
     case '+':
-      // set charset 
+      s.escflags |= ESC_STATE_ALTCHARSET;
       return true;
     case 'D': 
       if (s.cursor.y == s.scrollbottom) {
@@ -1151,6 +1334,22 @@ handlecsi(void) {
     case 'u': 
       handlealtcursor(CURSOR_ACTION_RESTORE);
       break;
+    case 'n': /* DSR -- Device Status Report */
+      switch (s.csiseq.params[0]) {
+        case 5: /* Status Report "OK" `0n` */
+          termwrite("\033[0n", sizeof("\033[0n") - 1, false);
+          break;
+        case 6: { 
+          char buf[128];
+          size_t len = snprintf(buf, sizeof(buf), "\033[%i;%iR",
+                         s.cursor.y+1, s.cursor.x+1);
+          termwrite(buf, len, 0);
+          break;
+        }
+        default:
+          break; 
+      }
+      break;
   }
 }
 
@@ -1160,11 +1359,12 @@ handlectrl(uint32_t c) {
     case '\f': 
     case '\v':
     case '\n':
-      newline(true);
-      return;
+      newline(lf_flag_exists(&s.termmode, TERM_MODE_CR_AND_LF));
+      printf("newline.\n");
+      break;
     case '\t': {
       handletab(1);
-      return;
+      break;
     }
     case '\b': 
       moveto(s.cursor.x - 1, s.cursor.y);
@@ -1175,27 +1375,35 @@ handlectrl(uint32_t c) {
     case 0x88:   
       s.tabs[s.cursor.x] = 1;
       break;
+    case 0x85:   
+      newline(true); 
+      break;
     case '\033': /* ESC */
       memset(&s.csiseq, 0, sizeof(s.csiseq));
       lf_flag_unset(&s.escflags, ESC_STATE_CSI|ESC_STATE_ALTCHARSET|ESC_STATE_TEST);
       lf_flag_set(&s.escflags, ESC_STATE_ON_ESC);
       return;
+    case '\032': /* SUB */
+      setcell(s.cursor.x, s.cursor.y, '?'); 
+    /* FALLTHROUGH */
+    default: break;
   }
+	lf_flag_unset(&s.escflags, ESC_STATE_STR_END|ESC_STATE_STR);
 }
 
-void 
-handlechar(uint32_t c) {
-  lf_flag_unset(&s.cursorstate, CURSOR_STATE_ONWRAP);
-  int32_t len = 1, w = 1;
+void handlechar(uint32_t c) {
+  //lf_flag_unset(&s.termmode, TERM_MODE_AUTO_WRAP);
+  int32_t w = 1;
   bool ctrl = isctrl(c);
   char utf8[4];
-  if(c < 127 || !lf_flag_exists(&s.termmode, TERM_MODE_UTF8)) {
+
+  if (c < 127 || !lf_flag_exists(&s.termmode, TERM_MODE_UTF8)) {
     utf8[0] = c;
   } else {
-    len = utf8encode(c, utf8);
+    utf8encode(c, utf8);
     if (!ctrl) {
       w = wcwidth(c);
-      if(w == -1) w = 1;
+      if (w == -1) w = 1;
     }
   }
 
@@ -1207,39 +1415,70 @@ handlechar(uint32_t c) {
     if (s.escflags == 0)
       s.recentcodepoint = 0;
     return;
-  } else if(lf_flag_exists(&s.escflags, ESC_STATE_ON_ESC)) {
-    if(lf_flag_exists(&s.escflags, ESC_STATE_CSI)) {
+  } else if (lf_flag_exists(&s.escflags, ESC_STATE_ON_ESC)) {
+    if (lf_flag_exists(&s.escflags, ESC_STATE_CSI)) {
       s.csiseq.buf[s.csiseq.len++] = c;
-      // Reset escape sequence flags when CSI terminator is encountered
-      if ((0x40 <= c && c <= 0x7E) || s.csiseq.len >= sizeof(s.csiseq.buf)-1) {
+      if ((0x40 <= c && c <= 0x7E) || s.csiseq.len >= sizeof(s.csiseq.buf) - 1) {
+        s.escflags = 0;
         parsecsi();
         handlecsi();
-        s.escflags = 0;
       }
       return;
-    }  else if(lf_flag_exists(&s.escflags, ESC_STATE_UTF8)) {
-      //if (c == 'G') // SET UTF8
-      //else if (ascii == '@') // UNSET UTF8
-    } else if(lf_flag_exists(&s.escflags, ESC_STATE_ALTCHARSET)) {
-      // handle alt charset 
-    } else if(lf_flag_exists(&s.escflags, ESC_STATE_TEST)) {
-      // handle test 
-    } else {
-      if(handleescseq(c)) return;
+    } else if (lf_flag_exists(&s.escflags, ESC_STATE_UTF8)) {
+      // UTF8 state handling
+    } else if (lf_flag_exists(&s.escflags, ESC_STATE_ALTCHARSET)) {
+      s.escflags &= ~ESC_STATE_ALTCHARSET;
+      if (c == '0') {
+        s.charset = CHARSET_ALT;
+      } else if (c == 'B') {
+        s.charset = CHARSET_ASCII;
+      }
+      return;
+    } else if (lf_flag_exists(&s.escflags, ESC_STATE_TEST)) {
+      // test handling
+    } else if (lf_flag_exists(&s.escflags, ESC_STATE_STR)) {
+      // Read until BEL (\a) or ESC 
+      if (c == '\a') { 
+        s.escflags &= ~ESC_STATE_STR;
+        return;
+      }
+      if (c == '\\' && s.csiseq.buf[s.csiseq.len - 1] == '\033') {
+        s.escflags &= ~ESC_STATE_STR;
+        return;
+      }
+      if (s.csiseq.len < sizeof(s.csiseq.buf) - 1) {
+        s.csiseq.buf[s.csiseq.len++] = c;
+      }
+      return;
+    }
+    else {
+      if (handleescseq(c))
+        return;
     }
     s.escflags = 0;
-    return; 
-  } 
-
-  cell_t* cell = cellat(s.cursor.x, s.cursor.y); 
-  if(lf_flag_exists(&s.termmode, TERM_MODE_AUTO_WRAP) &&
-    (s.cursorstate & CURSOR_STATE_ONWRAP)){ 
-    newline(true);
-    cell = cellat(s.cursor.x, s.cursor.y);
+    return;
   }
 
+  if (s.cursorstate & CURSOR_STATE_ONWRAP && lf_flag_exists(&s.termmode, TERM_MODE_AUTO_WRAP)) {
+    newline(true);
+  }
+	
+  if (s.cursor.x+w> s.cols) {
+		if ( lf_flag_exists(&s.termmode, TERM_MODE_AUTO_WRAP))
+			newline(true);
+		else
+			moveto(s.cols - w, s.cursor.y);
+	}
 
-	setcell(s.cursor.x, s.cursor.y, c);
+
+  if (s.charset == CHARSET_ALT && c >= 0x20 && c <= 0x7E && dec_special_graphics[c]) {
+    c = dec_special_graphics[c];
+  }
+
+  setcell(s.cursor.x, s.cursor.y, c);
+  if (w == 2 && s.cursor.x + 1 < s.cols) {
+    setcell(s.cursor.x + 1, s.cursor.y, ' ');
+  }
   s.recentcodepoint = c;
 
   if (s.cursor.x + w < s.cols) {
@@ -1247,8 +1486,6 @@ handlechar(uint32_t c) {
   } else {
     s.cursorstate |= CURSOR_STATE_ONWRAP;
   }
-  (void)cell;
-  (void)len;
 }
 
 pty_data_t* setuppty(void) {
@@ -1272,7 +1509,7 @@ pty_data_t* setuppty(void) {
 
   if (data->childpid == 0) {
     // Child: replace with shell
-    execlp("bash", "bash", (char *)NULL);
+    execlp("/usr/bin/bash", "/usr/bin/bash", (char *)NULL);
     perror("execlp");
     fprintf(stderr, "twr: failed to call execlp() with bash.\n");
     perror("execlp");
@@ -1290,7 +1527,7 @@ void charcb(
 ) {
   (void)win;
   (void)ui;
-  write(s.pty->masterfd, utf8, utf8len);
+  termwrite(utf8 ,utf8len, false);
 }
 void keycb(
   lf_ui_state_t* ui,
@@ -1310,7 +1547,7 @@ void keycb(
   switch (key) {
     case KeyEnter: {
       char cr = '\r';
-      write(s.pty->masterfd, &cr, 1);
+      termwrite(&cr,1, false);
       break;
     }
   }
@@ -1321,6 +1558,19 @@ void* waitforchild(void* arg) {
   waitpid(pty->childpid, &status, 0);
   s.ui->running = 0; 
   return NULL;
+}
+
+
+void sendwinsize(int fd, int rows, int cols, int pixelw, int pixelh) {
+  struct winsize ws = {
+    .ws_row = rows,
+    .ws_col = cols,
+    .ws_xpixel = pixelw,
+    .ws_ypixel = pixelh,
+  };
+  if (ioctl(fd, TIOCSWINSZ, &ws) < 0) {
+    perror("ioctl TIOCSWINSZ failed");
+  }
 }
 
 void resizeterm(int32_t w, int32_t h, int32_t cw, int32_t ch) {
@@ -1355,6 +1605,7 @@ int main() {
   s.saved_scrolltop = s.scrolltop;
   s.saved_head = s.head;
   setlocale(LC_CTYPE, "");
+  sendwinsize(s.pty->masterfd, s.rows, s.cols, 1280, 720);
   if(!s.pty) return 1;
 
   pthread_t childwait;
@@ -1376,7 +1627,10 @@ int main() {
   lf_win_set_typing_char_cb(win, charcb);
   lf_win_set_key_cb(win, keycb);
 
-  s.ui->root->props.color.a = 255; 
+  s.ui->root->props.color.r = 0; 
+  s.ui->root->props.color.g  = 0; 
+  s.ui->root->props.color.b = 0; 
+  s.ui->root->props.color.a = 125; 
 
 
   lf_component(s.ui, termcomp);
