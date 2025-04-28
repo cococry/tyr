@@ -20,37 +20,42 @@
 #include "term.h"
 #include "render.h"
 
+
 pty_data_t* setuppty(void) {
-  pty_data_t* data = malloc(sizeof(*data));
-  data->buf = malloc(BUF_SIZE);
-  memset(data->buf, 0, BUF_SIZE);
-  data->buflen = 0;
+    pty_data_t* data = malloc(sizeof(*data));
+    if (!data) {
+        perror("malloc");
+        return NULL;
+    }
+    
+    data->buf = malloc(BUF_SIZE);
+    if (!data->buf) {
+        perror("malloc");
+        free(data);
+        return NULL;
+    }
+    memset(data->buf, 0, BUF_SIZE);
+    data->buflen = 0;
 
 
-  tcgetattr(STDIN_FILENO, &data->prevterm); 
-  struct termios raw = data->prevterm;
-  cfmakeraw(&raw);
-  tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+    data->childpid = forkpty(&data->masterfd, NULL, NULL, NULL);
+    if (data->childpid == -1) {
+        perror("forkpty");
+        free(data->buf);
+        free(data);
+        return NULL;
+    }
 
-  data->childpid = forkpty(&data->masterfd, NULL, NULL, NULL);
-  if (data->childpid == -1) {
-    fprintf(stderr, "twr: failed to call forkpty().\n");
-    perror("forkpty");
-    return NULL;
-  }
+    if (data->childpid == 0) {
+        execlp("/usr/bin/bash", "bash", (char *)NULL);
+        
+        perror("execlp");
+        _exit(1); 
+    }
 
-  if (data->childpid == 0) {
-    // Child: replace with shell
-    execlp("/usr/bin/bash", "/usr/bin/bash", (char *)NULL);
-    perror("execlp");
-    fprintf(stderr, "twr: failed to call execlp() with bash.\n");
-    perror("execlp");
-    return NULL;
-  }
-
-  return data;
+    // Parent process: return the pty data
+    return data;
 }
-
 void* ptyhandler(void* data) {
   pty_data_t* pty = (pty_data_t*)data;
   fd_set fds;

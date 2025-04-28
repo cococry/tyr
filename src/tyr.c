@@ -20,9 +20,6 @@ void cleanup() {
   if (kill(s.pty->childpid, SIGTERM) == -1) {
     perror("Failed to send SIGTERM to child");
   }
-  if (tcsetattr(STDIN_FILENO, TCSANOW, &s.pty->prevterm) == -1) {
-    perror("tcsetattr failed to restore terminal");
-  }
 
   close(s.pty->masterfd);
 
@@ -145,11 +142,6 @@ int main() {
 
 
   lf_widget_set_font_family(s.ui, s.ui->root, "JetBrains Mono Nerd Font");
-  FT_Face face = lf_asset_manager_request_font(s.ui, "JetBrains Mono Nerd Font",
-                                               LF_FONT_STYLE_REGULAR, 28).font->face;
-  float cell_width = face->size->metrics.max_advance / 64.0f;
-  printf("Cell w: %f\n", cell_width);
-
 
   lf_win_set_typing_char_cb(win, charcb);
   lf_win_set_key_cb(win, keycb);
@@ -158,7 +150,6 @@ int main() {
   s.ui->root->props.color.g  = 0; 
   s.ui->root->props.color.b = 0; 
   s.ui->root->props.color.a = 125; 
-
 
   lf_component(s.ui, uiterminal);
 

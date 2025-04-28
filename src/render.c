@@ -1,14 +1,27 @@
+#include <freetype/freetype.h>
+#include <leif/asset_manager.h>
 #include <runara/runara.h>
 #include <leif/leif.h>
+#include <string.h>
 
 #include "tyr.h"
 #include "term.h"
 
+#define STB_DS_IMPLEMENTATION
+#include "../vendor/stb_ds.h"
+
 typedef struct {
   uint32_t begin, end;
   lf_mapped_font_t font;
+  RnHarfbuzzText* hb_text;
 } rendering_range_t;
 
+typedef struct {
+  uint32_t key;
+  char* value;
+} _fallback_family_hm_element;
+  
+static _fallback_family_hm_element* fallback_fonts = NULL; 
 char* fallbackfamily(uint32_t unicode) {
   FcPattern *pattern = FcPatternCreate();
   FcCharSet *charset = FcCharSetCreate();
@@ -38,7 +51,27 @@ char* fallbackfamily(uint32_t unicode) {
   return font_family; 
 }
 
-RnTextProps rendertextranged(
+
+char* getfallbackfamily(uint32_t codepoint) {
+  int index = hmgeti(fallback_fonts, codepoint);
+  if (index >= 0) {
+    return fallback_fonts[index].value;
+  } else {
+    char* family = fallbackfamily(codepoint);
+    if (family) {
+      hmput(fallback_fonts, codepoint, family);
+    }
+    return family;
+  }
+}
+
+typedef struct {
+  RnTextProps props;
+  float occupied_w;
+} text_props_t;
+
+
+text_props_t rendertextranged(
   RnState* state, 
   const char* text, 
   RnFont* font, 
@@ -121,147 +154,108 @@ RnTextProps rendertextranged(
     w += 16.796875;
   }
 
-  return (RnTextProps){
-    .width = w, 
-    .height = textheight,
-    .paragraph_pos = pos
+  return (text_props_t){
+    .occupied_w = w,
+    .props = (RnTextProps){
+      .width = pos.x - start_pos.x, 
+      .height = textheight,
+      .paragraph_pos = pos
+    }
   };
-}
-
-bool rn_font_has_codepoint(RnFont* font, uint32_t codepoint) {
-  if (!font || !font->face) {
-    return false;
-  }
-  
-  FT_UInt glyph_index = FT_Get_Char_Index(font->face, codepoint);
-
-  return glyph_index != 0;
-}
-
-uint32_t rn_utf8_to_codepoint_and_advance(const char* str, uint32_t max_len, uint32_t* out_codepoint) {
-    if (max_len == 0 || str == NULL) {
-        if (out_codepoint) *out_codepoint = 0xFFFD;
-        return 0;
-    }
-
-    const uint8_t* s = (const uint8_t*)str;
-    uint8_t byte1 = s[0];
-
-    if (byte1 < 0x80) {
-        if (out_codepoint) *out_codepoint = byte1;
-        return 1;
-    } else if ((byte1 & 0xE0) == 0xC0 && max_len >= 2) {
-        uint8_t byte2 = s[1];
-        if ((byte2 & 0xC0) != 0x80) goto invalid;
-        uint32_t cp = ((byte1 & 0x1F) << 6) | (byte2 & 0x3F);
-        if (cp < 0x80) goto invalid;
-        if (out_codepoint) *out_codepoint = cp;
-        return 2;
-    } else if ((byte1 & 0xF0) == 0xE0 && max_len >= 3) {
-        uint8_t byte2 = s[1];
-        uint8_t byte3 = s[2];
-        if ((byte2 & 0xC0) != 0x80 || (byte3 & 0xC0) != 0x80) goto invalid;
-        uint32_t cp = ((byte1 & 0x0F) << 12) | ((byte2 & 0x3F) << 6) | (byte3 & 0x3F);
-        if (cp < 0x800) goto invalid;
-        if (cp >= 0xD800 && cp <= 0xDFFF) goto invalid; // Surrogates
-        if (out_codepoint) *out_codepoint = cp;
-        return 3;
-    } else if ((byte1 & 0xF8) == 0xF0 && max_len >= 4) {
-        uint8_t byte2 = s[1];
-        uint8_t byte3 = s[2];
-        uint8_t byte4 = s[3];
-        if ((byte2 & 0xC0) != 0x80 || (byte3 & 0xC0) != 0x80 || (byte4 & 0xC0) != 0x80) goto invalid;
-        uint32_t cp = ((byte1 & 0x07) << 18) | ((byte2 & 0x3F) << 12) | ((byte3 & 0x3F) << 6) | (byte4 & 0x3F);
-        if (cp < 0x10000 || cp > 0x10FFFF) goto invalid;
-        if (out_codepoint) *out_codepoint = cp;
-        return 4;
-    }
-
-invalid:
-    if (out_codepoint) *out_codepoint = 0xFFFD;
-    return 1;
 }
 
 
 void rendertextui(
   lf_ui_state_t* ui,
   const char* text, 
-  RnFont* font, 
+  lf_mapped_font_t mapped_font, 
   vec2s pos, 
   RnColor color, 
   bool render
 ) {
-  lf_mapped_font_t mapped_font = {0};
-  for(uint32_t i = 0; i < lf_ui_core_get_asset_manager()->fonts.size; i++) {
-    lf_mapped_font_t f = lf_ui_core_get_asset_manager()->fonts.items[i];
-    if(f.font == font) {
-      mapped_font = f;
-      break;
-    }
-  }
-
-  if(!mapped_font.font) {
+  if (!mapped_font.font) {
     fprintf(stderr, "tyr: trying to render with unregistered font.\n");
     return;
   }
 
-  RnHarfbuzzText* hb_text = rn_hb_text_from_str(ui->render_state, *font, text);
+  RnHarfbuzzText* hb_text = rn_hb_text_from_str(ui->render_state, *mapped_font.font, text);
 
   rendering_range_t rendering_ranges[hb_text->glyph_count];
   memset(rendering_ranges, 0, sizeof(rendering_ranges));
+
   uint32_t nranges = 0;
   uint32_t iranges = 0;
 
   rendering_ranges[nranges].font = mapped_font;
   rendering_ranges[nranges].begin = 0;
   rendering_ranges[nranges].end = 0;
+  rendering_ranges[nranges].hb_text = hb_text;
   nranges++;
 
   uint32_t text_length = strlen(text);
 
   for (unsigned int i = 0; i < hb_text->glyph_count; i++) {
-    uint32_t unicode_codepoint = rn_utf8_to_codepoint(text, hb_text->glyph_info[i].cluster, text_length);
+    hb_glyph_info_t inf = hb_text->glyph_info[i];
+    uint32_t unicode_codepoint = rn_utf8_to_codepoint(text, inf.cluster, text_length);
+    lf_mapped_font_t current_font = rendering_ranges[iranges].font;
+    lf_mapped_font_t next_font = current_font;
 
-    // Check if the current font can render this unicode codepoint
-    if (!hb_text->glyph_info[i].codepoint) {
-      // Try to find fallback font family
-      const char* fallback_family = fallbackfamily(unicode_codepoint);
-      if (fallback_family) {
-        lf_mapped_font_t fallback_font = lf_asset_manager_request_font(ui, fallback_family, mapped_font.style.style, mapped_font.pixel_size);
-        if (fallback_font.font) {
-          if (rendering_ranges[iranges].font.font != fallback_font.font) {
-            iranges++;
-            rendering_ranges[iranges].begin = i;
-            rendering_ranges[iranges].font = fallback_font;
-            nranges++;
+    if (FT_Get_Char_Index(current_font.font->face, unicode_codepoint) == 0
+      || (FT_Get_Char_Index(mapped_font.font->face, unicode_codepoint) != 0 &&
+      current_font.font != mapped_font.font)) {
+      // current font cannot render this codepoint
+      if (FT_Get_Char_Index(mapped_font.font->face, unicode_codepoint) != 0) {
+        // mapped font can render -> switch back
+        next_font = mapped_font;
+      } else {
+        // mapped font also cannot render: find fallback
+        const char* fallback_family = getfallbackfamily(unicode_codepoint);
+        if (fallback_family) {
+          lf_mapped_font_t fallback_font = lf_asset_manager_request_font(
+            ui, fallback_family, mapped_font.style.style, 
+            mapped_font.pixel_size);
+
+          if (fallback_font.font) {
+            next_font = fallback_font;
+          } else {
+            fprintf(stderr, "tyr: failed to load fallback font for unicode %u.\n", unicode_codepoint);
           }
-        } else {
-          fprintf(stderr, "tyr: failed to load fallback font for unicode %u.\n", unicode_codepoint);
         }
-        free((void*)fallback_family);
       }
-    } else {
-      if (rendering_ranges[iranges].font.font != mapped_font.font) {
+
+      // only switch font if needed
+      if (next_font.font != current_font.font) {
         iranges++;
         rendering_ranges[iranges].begin = i;
-        rendering_ranges[iranges].font = mapped_font;
+        rendering_ranges[iranges].font = next_font;
+        rendering_ranges[iranges].hb_text = hb_text;
         nranges++;
       }
     }
     rendering_ranges[iranges].end = i + 1;
   }
 
-  float posx = pos.x; 
-  for(uint32_t i = 0; i < nranges; i++) {
-    rendering_range_t range = rendering_ranges[i]; 
-    float w = rendertextranged(
-      ui->render_state, text, range.font.font, 
-      (vec2s){.x = posx, .y = pos.y}, 
-      color, render, range.begin, range.end).width;
-    posx += w;
+  float posx = pos.x;
+  float spacing = 0;
+  for (uint32_t i = 0; i < nranges; i++) {
+    rendering_range_t range = rendering_ranges[i];
+    if (range.font.font == mapped_font.font) {
+      posx += spacing;
+      spacing = 0;
+    }
+
+    text_props_t props = rendertextranged(
+      ui->render_state, text, range.font.font,
+      (vec2s){.x = posx, .y = pos.y},
+      color, render, range.begin, range.end
+    );
+
+    posx += props.props.width;
+    if (range.font.font != mapped_font.font) {
+      spacing += props.occupied_w - props.props.width;
+    }
   }
 }
-
 void 
 renderterminalrow(lf_ui_state_t* ui, lf_widget_t* widget) {
   lf_text_t* text = (lf_text_t*)widget;
@@ -271,13 +265,12 @@ renderterminalrow(lf_ui_state_t* ui, lf_widget_t* widget) {
     rendertextui(
       ui, 
       row,
-      text->font.font,
+      text->font,
       (vec2s){.x = 0, .y = y},
       RN_WHITE, true);
     y += text->font.pixel_size;
     free(row);
   }
-
 }
 
 void 
