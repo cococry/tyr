@@ -22,6 +22,7 @@ typedef struct {
 } _fallback_family_hm_element;
   
 static _fallback_family_hm_element* fallback_fonts = NULL; 
+
 char* fallbackfamily(uint32_t unicode) {
   FcPattern *pattern = FcPatternCreate();
   FcCharSet *charset = FcCharSetCreate();
@@ -40,7 +41,7 @@ char* fallbackfamily(uint32_t unicode) {
   if (match) {
     FcChar8 *family = NULL;
     if (FcPatternGetString(match, FC_FAMILY, 0, &family) == FcResultMatch) {
-      font_family = strdup((char*)family);
+      font_family = strdup((char*)family); 
     }
     FcPatternDestroy(match);
   }
@@ -51,7 +52,6 @@ char* fallbackfamily(uint32_t unicode) {
   return font_family; 
 }
 
-
 char* getfallbackfamily(uint32_t codepoint) {
   int index = hmgeti(fallback_fonts, codepoint);
   if (index >= 0) {
@@ -59,12 +59,11 @@ char* getfallbackfamily(uint32_t codepoint) {
   } else {
     char* family = fallbackfamily(codepoint);
     if (family) {
-      hmput(fallback_fonts, codepoint, family);
+      hmput(fallback_fonts, codepoint, family); // already duplicated inside fallbackfamily
     }
     return family;
   }
 }
-
 typedef struct {
   RnTextProps props;
   float occupied_w;
