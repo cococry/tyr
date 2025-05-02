@@ -1,5 +1,6 @@
 #include "pty.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -18,61 +19,86 @@
 #include <leif/task.h>
 
 #include "term.h"
-#include "render.h"
 
 
 pty_data_t* setuppty(void) {
-    pty_data_t* data = malloc(sizeof(*data));
-    if (!data) {
-        perror("malloc");
-        return NULL;
-    }
-    
-    data->buf = malloc(BUF_SIZE);
-    if (!data->buf) {
-        perror("malloc");
-        free(data);
-        return NULL;
-    }
-    memset(data->buf, 0, BUF_SIZE);
-    data->buflen = 0;
+  pty_data_t* data = malloc(sizeof(*data));
+  if (!data) {
+    perror("malloc");
+    return NULL;
+  }
+
+  data->buf = malloc(BUF_SIZE);
+  if (!data->buf) {
+    perror("malloc");
+    free(data);
+    return NULL;
+  }
+  memset(data->buf, 0, BUF_SIZE);
+  data->buflen = 0;
 
 
-    data->childpid = forkpty(&data->masterfd, NULL, NULL, NULL);
-    if (data->childpid == -1) {
-        perror("forkpty");
-        free(data->buf);
-        free(data);
-        return NULL;
-    }
+  data->childpid = forkpty(&data->masterfd, NULL, NULL, NULL);
+  if (data->childpid == -1) {
+    perror("forkpty");
+    free(data->buf);
+    free(data);
+    return NULL;
+  }
 
-    if (data->childpid == 0) {
-        execlp("/usr/bin/bash", "bash", (char *)NULL);
-        
-        perror("execlp");
-        _exit(1); 
-    }
+  if (data->childpid == 0) {
+    execlp("/usr/bin/bash", "bash", (char *)NULL);
 
-    // Parent process: return the pty data
-    return data;
+    perror("execlp");
+    _exit(1); 
+  }
+
+  if (pipe(data->shutdown_pipe) == -1) {
+    perror("pipe");
+    free(data);
+    return NULL;
+  }
+  
+  if (pipe(data->notify_pipe) == -1) {
+    perror("pipe");
+    free(data);
+    return NULL;
+  }
+  fcntl(data->notify_pipe[0], F_SETFL, O_NONBLOCK);  
+
+
+  // Parent process: return the pty data
+  return data;
 }
+
 void* ptyhandler(void* data) {
   pty_data_t* pty = (pty_data_t*)data;
   fd_set fds;
-  while (1) {
-    FD_ZERO(&fds);
-    FD_SET(STDIN_FILENO, &fds);
-    FD_SET(pty->masterfd, &fds);
-    int nfds = (STDIN_FILENO > pty->masterfd ? STDIN_FILENO : pty->masterfd) + 1;
+  int maxfd = pty->masterfd > pty->shutdown_pipe[0] ? pty->masterfd : pty->shutdown_pipe[0];
+  maxfd = STDIN_FILENO > maxfd ? STDIN_FILENO : maxfd;
 
-    if (select(nfds, &fds, NULL, NULL, NULL) < 0) {
+  while (true) {
+    FD_ZERO(&fds);
+    FD_SET(pty->masterfd, &fds);
+    FD_SET(STDIN_FILENO, &fds);
+    FD_SET(pty->shutdown_pipe[0], &fds);
+
+    int ret = select(maxfd + 1, &fds, NULL, NULL, NULL);
+    if (ret < 0) {
       perror("select");
       break;
     }
+
+    if (FD_ISSET(pty->shutdown_pipe[0], &fds)) {
+      // Clean shutdown requested
+      break;
+    }
+
     if (FD_ISSET(pty->masterfd, &fds)) {
       readfrompty();
     }
   }
+
 
   return NULL;
 }
@@ -132,7 +158,9 @@ size_t readfrompty(void) {
     uint32_t c;
     int len = utf8decode((const char*)&readbuf[i], &c);
     if (len < 1 || i + len > buflen) break; // incomplete UTF-8 sequence
+    pthread_mutex_lock(&s.celllock);
     handlechar(c);
+    pthread_mutex_unlock(&s.celllock);
     i += len;
   }
 
@@ -141,12 +169,9 @@ size_t readfrompty(void) {
     memmove(readbuf, readbuf + i, buflen - i);
   buflen -= i;
 
-  // queue a rerender task
-  if (s.ui) {
-    task_data_t* data = malloc(sizeof(*data));
-    data->ui = s.ui;
-    lf_task_enqueue(taskrerender, (void*)data);
-  }
+  char dummy = 1;
+  write(s.pty->notify_pipe[1], &dummy, 1);
+  glfwPostEmptyEvent();  // wake the main thread
 
   return n;
 }
@@ -167,9 +192,15 @@ termhandlecharstream(const char* buf, uint32_t buflen) {
       codepoint = buf[n] & 0xFF;
       charsize = 1;
     }
+    pthread_mutex_lock(&s.celllock);
     handlechar(codepoint);
+    pthread_mutex_unlock(&s.celllock);
     n += charsize;
   }
+  
+  char dummy = 1;
+  write(s.pty->notify_pipe[1], &dummy, 1);
+  glfwPostEmptyEvent();  // wake the main thread
 
   return n;
 }

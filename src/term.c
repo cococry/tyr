@@ -1,9 +1,13 @@
 #include "term.h"
+#include <pthread.h>
+#include <stdatomic.h>
 #define __USE_XOPEN
 #include <wchar.h>
 #include <ctype.h>
 
 #include "pty.h"
+#include "render.h"
+
 
 const uint32_t dec_special_graphics[128]= {
     // Note: Only 0x20–0x7E are valid remappings in Special Graphics Mode.
@@ -207,6 +211,7 @@ cell_t* cellat(int32_t x, int32_t y) {
 }
 void setcell(int32_t x, int32_t y, uint32_t codepoint) {
   s.cells[y * s.cols + x].codepoint = codepoint;
+  setdirty(y, true);
 }
 
 void togglealtscreen(void) {
@@ -214,6 +219,10 @@ void togglealtscreen(void) {
   s.cells = s.altcells;
   s.altcells = tmp;
   s.termmode ^= TERM_MODE_ALTSCREEN;
+  for(int32_t i = 0; i < s.rows; i++) {
+    atomic_store(&s.dirty[i], 1); 
+  }
+  atomic_store(&s.needrender, true);
 }
 
 void moveto(int32_t x, int32_t y) {
@@ -274,7 +283,6 @@ deletecells(int32_t ncells) {
   for(int32_t x = s.cols - ncells; x < s.cols; x++) {
     cursorrow[x].codepoint = ' ';
   }
-
 }
 
 void insertblankchars(int32_t nchars) {
@@ -302,39 +310,45 @@ void insertblankchars(int32_t nchars) {
 }
 
 void scrollup(int32_t start, int32_t scrolls) {
-    if (scrolls <= 0) return;
+  if (scrolls <= 0) return;
 
-    for (int32_t i = 0; i <= s.scrollbottom - start - scrolls; i++) {
-        cell_t* src = getphysrow(start + scrolls + i);
-        cell_t* dest = getphysrow(start + i);
-        memcpy(dest, src, sizeof(cell_t) * s.cols);
-    }
+  for(int32_t i = start; i <= s.scrollbottom; i++) {
+    setdirty(i, true);
+  }
+  for (int32_t i = 0; i <= s.scrollbottom - start - scrolls; i++) {
+    cell_t* src = getphysrow(start + scrolls + i);
+    cell_t* dest = getphysrow(start + i);
+    memcpy(dest, src, sizeof(cell_t) * s.cols);
+  }
 
-    // Clear lines at the bottom
-    for (int32_t i = s.scrollbottom - scrolls + 1; i <= s.scrollbottom; i++) {
-        cell_t* row = getphysrow(i);
-        for (int32_t x = 0; x < s.cols; x++) {
-            row[x].codepoint = ' ';
-        }
+  // Clear lines at the bottom
+  for (int32_t i = s.scrollbottom - scrolls + 1; i <= s.scrollbottom; i++) {
+    cell_t* row = getphysrow(i);
+    for (int32_t x = 0; x < s.cols; x++) {
+      row[x].codepoint = ' ';
     }
+  }
 }
 
 void scrolldown(int32_t start, int32_t scrolls) {
-    if (scrolls <= 0) return;
+  if (scrolls <= 0) return;
 
-    for (int32_t i = s.scrollbottom - start - scrolls; i >= 0; i--) {
-        cell_t* src = getphysrow(start + i);
-        cell_t* dest = getphysrow(start + i + scrolls);
-        memcpy(dest, src, sizeof(cell_t) * s.cols);
-    }
+  for(int32_t i = start; i < s.scrollbottom-scrolls; i++) {
+    setdirty(i, true);
+  }
+  for (int32_t i = s.scrollbottom - start - scrolls; i >= 0; i--) {
+    cell_t* src = getphysrow(start + i);
+    cell_t* dest = getphysrow(start + i + scrolls);
+    memcpy(dest, src, sizeof(cell_t) * s.cols);
+  }
 
-    // Clear lines at the top
-    for (int32_t i = start; i < start + scrolls; i++) {
-        cell_t* row = getphysrow(i);
-        for (int32_t x = 0; x < s.cols; x++) {
-            row[x].codepoint = ' ';
-        }
+  // Clear lines at the top
+  for (int32_t i = start; i < start + scrolls; i++) {
+    cell_t* row = getphysrow(i);
+    for (int32_t x = 0; x < s.cols; x++) {
+      row[x].codepoint = ' ';
     }
+  }
 }
 void newline(bool setx) {
   int32_t x = setx ? 0 : s.cursor.x;
@@ -422,13 +436,15 @@ void settermmode(
           bool inaltscreen = lf_flag_exists(&s.termmode, TERM_MODE_ALTSCREEN);
           if (inaltscreen) {
             for (int32_t y = 0; y < s.rows; y++) {
+              setdirty(y, true);
               for (int32_t x = 0; x < s.cols; x++) {
                 cellat(x, y)->codepoint = ' ';
               }
             }
           }
-          if (toggle != inaltscreen)
+          if (toggle != inaltscreen) {
             togglealtscreen();
+          }
 
           break; 
         }
@@ -648,7 +664,6 @@ handlecsi(void) {
       break;
     case 'H': 
     case 'f': {
-      // Move to row, col
       uint32_t x = s.csiseq.nparams > 1 ? s.csiseq.params[1] : 1;
       uint32_t y = s.csiseq.nparams > 0 ? s.csiseq.params[0] : 1;
       movetodecom(x-1, y-1);
@@ -689,6 +704,7 @@ handlecsi(void) {
         }
         if(s.cursor.y >= s.rows - 1) break;
         for(int32_t y = s.cursor.y + 1; y < s.rows; y++) {
+          setdirty(y, true);
           for(int32_t x = 0; x < s.cols; x++) {
             cellat(x, y)->codepoint = ' ';
           }
@@ -697,17 +713,21 @@ handlecsi(void) {
         // From begin of screen to cursor
         if(s.cursor.y > 1) {
           for(int32_t y = 0; y < s.cursor.y - 1; y++) {
+            setdirty(y, true);
             for(int32_t x = 0; x < s.cols; x++) {
               cellat(x, y)->codepoint = ' ';
             }
           }
         }
+
+        setdirty(s.cursor.y, true);
         for(int32_t x = 0; x < s.cursor.x; x++) {
           cellat(x, s.cursor.y)->codepoint = ' ';
         }
       } else if (op == 2) {
         // Entire screen
         for(int32_t y = 0; y < s.rows; y++) {
+          setdirty(y, true);
           for(int32_t x = 0; x < s.cols; x++) {
             cellat(x, y)->codepoint = ' ';
           }
@@ -929,4 +949,13 @@ void handlechar(uint32_t c) {
   } else {
     s.cursorstate |= CURSOR_STATE_ONWRAP;
   }
+}
+
+void setdirty(uint32_t rowidx, bool dirty) {
+  if (rowidx >= (uint32_t)s.rows) return;
+  atomic_store(&s.dirty[rowidx], dirty ? 1 : 0);
+
+  if (dirty) {
+    atomic_store(&s.needrender, true);
+  } 
 }

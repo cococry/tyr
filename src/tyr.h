@@ -1,6 +1,8 @@
 #pragma once 
 
+#include <leif/asset_manager.h>
 #include <leif/leif.h>
+#include <leif/util.h>
 #include <stdint.h>
 #include <termio.h>
 
@@ -29,6 +31,8 @@ typedef struct {
   struct termios prevterm;
   pthread_t ptythread;
   pid_t childpid;
+  int shutdown_pipe[2];
+  int notify_pipe[2];
 } pty_data_t;
 
 typedef struct {
@@ -148,6 +152,8 @@ typedef struct {
 
   int32_t* tabs;
 
+  _Atomic int32_t* dirty;
+
   escape_seq_t csiseq;
   cursor_state_t cursorstate;
   uint32_t termmode;
@@ -155,7 +161,22 @@ typedef struct {
 
   uint32_t recentcodepoint;
 
+  lf_widget_t* textwidget;
+
   charset_mode_t charset;
+
+  GLuint fbo;
+  GLuint fbo_texture;
+  vec2s fbo_size;
+
+  lf_mapped_font_t font;
+  float fontadvance;
+
+  _Atomic bool needrender;
+
+  pthread_mutex_t celllock;
+
+  bool fullrerender;
 } state_t;
 
 extern state_t s;

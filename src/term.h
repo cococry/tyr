@@ -55,3 +55,5 @@ void handlecsi(void);
 void handlectrl(uint32_t c);
 
 void handlechar(uint32_t c);
+
+void setdirty(uint32_t rowidx, bool dirty);

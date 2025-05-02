@@ -2,8 +2,8 @@
 
 #include <leif/leif.h>
 
-void renderterminalrow(lf_ui_state_t* ui, lf_widget_t* widget);
+void renderterminalrows(void);
 
-void uiterminal(lf_ui_state_t* ui);
+void taskrender(void* data);
 
-void taskrerender(void* data);
+void enquerender();
