@@ -271,15 +271,14 @@ float rendertextui(
   }
   return height; 
 }
+
 void 
 renderterminalrows(void) {
   float y = 0;
+  pthread_mutex_lock(&s.celllock);
   for (uint32_t i = 0; i < (uint32_t)s.rows; i++) {
-    if (atomic_load(&s.dirty[i]) == 0) {
-      y += s.font.font->line_h;
-      continue;
-    }
-    char* row = getrowutf8(s.head + i);  
+    char* row = NULL;
+    row = getrowutf8(s.head + i);
     rendertextui(
       s.ui, 
       row,
@@ -288,12 +287,12 @@ renderterminalrows(void) {
       RN_WHITE, true);
 
     y += s.font.font->line_h;
-    atomic_store(&s.dirty[i], 0);
     free(row);
   }
+  pthread_mutex_unlock(&s.celllock);
+
   nrenders = 0;
 }
-
 
 void 
 taskrender(void* data) {

@@ -7,6 +7,7 @@
 #include <leif/win.h>
 #include <runara/runara.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #define __USE_XOPEN
 #define _XOPEN_SOURCE 600
 #define _GNU_SOURCE
@@ -51,8 +52,6 @@ void cleanup() {
   free(s.cells);
   free(s.altcells);
   free(s.tabs);
-  free(s.dirty);
-
 }
 
 void siginthandler(int sig) {
@@ -129,6 +128,7 @@ void resizeterm(int32_t w, int32_t h, int32_t cw, int32_t ch) {
   s.cells = realloc(s.cells, sizeof(cell_t) * new_cell_count);
   for (size_t i = 0; i < new_cell_count; i++) {
     s.cells[i].codepoint = ' ';
+    s.cells[i].dirty = false;
   }
 
   // reallocate alt buffer
@@ -136,6 +136,7 @@ void resizeterm(int32_t w, int32_t h, int32_t cw, int32_t ch) {
   s.altcells = malloc(sizeof(cell_t) * new_cell_count);
   for (size_t i = 0; i < new_cell_count; i++) {
     s.altcells[i].codepoint = ' ';
+    s.altcells[i].dirty = false;
   }
 
   // reallocate tab stops
@@ -146,16 +147,11 @@ void resizeterm(int32_t w, int32_t h, int32_t cw, int32_t ch) {
   }
   s.tabs[0] = 0;
 
-  // reallocate dirty flags
-  if (s.dirty) free(s.dirty);
-  s.dirty = malloc(sizeof(*s.dirty) * new_rows);
-  for(int32_t i = 0; i < new_rows; i++) {
-    atomic_store(&s.dirty[i], 0);
-  }
 
   // update size and mode
   s.cols = new_cols;
   s.rows = new_rows;
+
   s.termmode = TERM_MODE_UTF8 | TERM_MODE_AUTO_WRAP;
   sendwinsize(s.pty->masterfd, s.rows, s.cols, w, h);
 }
@@ -164,18 +160,11 @@ void nextevent(lf_ui_state_t* ui) {
   lf_task_flush_all_tasks();
   glfwWaitEvents();
 
-  // ⬇️ Drain PTY notify pipe (if any PTY output occurred)
-  char buf[64];
-  while (read(s.pty->notify_pipe[0], buf, sizeof(buf)) > 0) {
-    // Do nothing — just drain it
-  }
-
   for (uint32_t i = 0; i < ui->timers.size; i++) {
     if(!ui->timers.items[i].paused)
       lf_timer_tick(ui, &ui->timers.items[i], ui->delta_time, false);
   }
 
-  // Mark expired timers for deletion
   for (uint32_t i = 0; i < ui->timers.size; i++) {
     if (ui->timers.items[i].elapsed >= 
       ui->timers.items[i].duration && !ui->timers.items[i].paused) {
@@ -183,41 +172,33 @@ void nextevent(lf_ui_state_t* ui) {
     }
   }
 
-  if (atomic_load(&s.needrender)) {
-    lf_ui_core_remove_marked_widgets(ui->root);
-  }
-
   float cur_time = lf_ui_core_get_elapsed_time();
   ui->delta_time = cur_time - ui->_last_time;
   ui->_last_time = cur_time;
 
-  lf_widget_t* animated = NULL;
-  if (lf_widget_animate(ui, ui->root, &animated)) {
-    if(animated->_changed_size) {
-      lf_widget_shape(ui, lf_widget_flag_for_layout(ui, animated));
-    }
-    atomic_store(&s.needrender, true);
-  }
 
   bool rendered = lf_windowing_get_current_event() == LF_EVENT_WINDOW_REFRESH;
 
   lf_ui_core_shape_widgets_if_needed(ui, ui->root, false);
 
+  pthread_mutex_lock(&s.renderlock);
   if (atomic_load(&s.needrender)) {
-      pthread_mutex_lock(&s.celllock);
     vec2s winsize = lf_win_get_size(ui->win);
+    pthread_mutex_lock(&s.celllock);
     if(s.fullrerender) {
+      // set all rows dirty
       for(int32_t i = 0; i < s.rows; i++) {
-        atomic_store(&s.dirty[i], true);
+        setdirty(i, true);
       }
     }
     int32_t largest = 0, smallest = -1;
     for(int32_t i = 0; i < s.rows; i++) {
-      if(atomic_load(&s.dirty[i])) {
+      if(s.cells[i * s.cols].dirty) {
         if(smallest == -1) smallest = i;
         if(i > largest) largest = i;
       }
     }
+    pthread_mutex_unlock(&s.celllock);
 
     lf_container_t area;
     if(s.fullrerender) {
@@ -229,30 +210,29 @@ void nextevent(lf_ui_state_t* ui) {
       renderterminalrows();
       ui->render_end(ui->render_state);
       s.fullrerender = false;
-    } else if (smallest != -1) {
-      uint32_t renderheight = (largest - smallest + 1) * s.font.font->line_h;
-      uint32_t renderstart = smallest * s.font.font->line_h;
-      for(int32_t i = smallest; i <= largest; i++) {
-        atomic_store(&s.dirty[i], 1);
-      }
+    } else {
+        uint32_t renderheight = (largest - smallest + 1) * s.font.font->line_h;
+        uint32_t renderstart = smallest * s.font.font->line_h;
 
-      ui->render_resize_display(ui, winsize.x, winsize.y);
+        ui->render_resize_display(ui, winsize.x, winsize.y);
         area = (lf_container_t){
-        .pos = (vec2s){.x = 0, .y = renderstart},
-        .size = (vec2s){.x = winsize.x, .y = renderheight}
-      };
+          .pos = (vec2s){.x = 0, .y = renderstart},
+          .size = (vec2s){.x = winsize.x, .y = renderheight}
+        };
 
-      ui->render_clear_color_area(
-        ui->root->props.color, 
-        area, winsize.y);
-      ui->render_begin(ui->render_state);
-      renderterminalrows();
-      ui->render_end(ui->render_state);
+        ui->render_clear_color_area(
+          ui->root->props.color, 
+          area, winsize.y);
+        ui->render_begin(ui->render_state);
+        renderterminalrows();
+        ui->render_end(ui->render_state);
     }
 
     lf_win_swap_buffers(ui->win);
     atomic_store(&s.needrender, false);
-    pthread_mutex_unlock(&s.celllock);
+    pthread_mutex_unlock(&s.renderlock);
+  } else {
+    pthread_mutex_unlock(&s.renderlock);
   }
   if (!rendered) {
     ui->_idle_delay_func(ui);
@@ -293,6 +273,7 @@ int main() {
   atomic_store(&s.needrender, false);
 
   pthread_mutex_init(&s.celllock, NULL);
+  pthread_mutex_init(&s.renderlock, NULL);
 
   if(lf_windowing_init() != 0) return EXIT_FAILURE;
   lf_ui_core_set_window_hint(LF_WINDOWING_HINT_TRANSPARENT_FRAMEBUFFER, true);

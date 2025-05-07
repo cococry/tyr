@@ -220,9 +220,8 @@ void togglealtscreen(void) {
   s.altcells = tmp;
   s.termmode ^= TERM_MODE_ALTSCREEN;
   for(int32_t i = 0; i < s.rows; i++) {
-    atomic_store(&s.dirty[i], 1); 
+    setdirty(i, true);
   }
-  atomic_store(&s.needrender, true);
 }
 
 void moveto(int32_t x, int32_t y) {
@@ -952,10 +951,7 @@ void handlechar(uint32_t c) {
 }
 
 void setdirty(uint32_t rowidx, bool dirty) {
-  if (rowidx >= (uint32_t)s.rows) return;
-  atomic_store(&s.dirty[rowidx], dirty ? 1 : 0);
+  s.cells[rowidx * s.cols].dirty = dirty;
 
-  if (dirty) {
-    atomic_store(&s.needrender, true);
-  } 
+  //printf("Set: %i dirty.\n", rowidx * s.cols);
 }

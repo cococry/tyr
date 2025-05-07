@@ -1,7 +1,7 @@
 # Makefile for building tyr
 # Compiler and flags
 CC = gcc
-CFLAGS = -Wall -Wextra -O2 -DLF_RUNARA -DLF_GLFW
+CFLAGS = -Wall -Wextra -DLF_RUNARA -DLF_GLFW
 LDFLAGS = -lpodvig -Lvendor/reif/lib -lleif -lrunara -lGL -lX11 -lfontconfig -lfreetype -lharfbuzz -lm -lXrender -lglfw
 
 # Directories and files

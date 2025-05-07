@@ -64,7 +64,6 @@ pty_data_t* setuppty(void) {
     free(data);
     return NULL;
   }
-  fcntl(data->notify_pipe[0], F_SETFL, O_NONBLOCK);  
 
 
   // Parent process: return the pty data
@@ -153,24 +152,25 @@ size_t readfrompty(void) {
   buflen += n;
 
   // decode as much as we can
+    pthread_mutex_lock(&s.celllock);
   int i = 0;
   while (i < buflen) {
     uint32_t c;
     int len = utf8decode((const char*)&readbuf[i], &c);
     if (len < 1 || i + len > buflen) break; // incomplete UTF-8 sequence
-    pthread_mutex_lock(&s.celllock);
     handlechar(c);
-    pthread_mutex_unlock(&s.celllock);
     i += len;
   }
+    pthread_mutex_unlock(&s.celllock);
 
   // move any remaining incomplete sequence to the beginning
   if (i < buflen)
     memmove(readbuf, readbuf + i, buflen - i);
   buflen -= i;
 
-  char dummy = 1;
-  write(s.pty->notify_pipe[1], &dummy, 1);
+  pthread_mutex_lock(&s.renderlock);
+  atomic_store(&s.needrender, true);
+  pthread_mutex_unlock(&s.renderlock);
   glfwPostEmptyEvent();  // wake the main thread
 
   return n;

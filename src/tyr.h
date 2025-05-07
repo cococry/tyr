@@ -129,6 +129,7 @@ typedef struct {
   term_color_16_t bg, fg;
   uint32_t codepoint;
   term_font_style_t font_style;
+  bool dirty;
 } cell_t;
 
 typedef enum {
@@ -152,8 +153,6 @@ typedef struct {
 
   int32_t* tabs;
 
-  _Atomic int32_t* dirty;
-
   escape_seq_t csiseq;
   cursor_state_t cursorstate;
   uint32_t termmode;
@@ -174,7 +173,7 @@ typedef struct {
 
   _Atomic bool needrender;
 
-  pthread_mutex_t celllock;
+  pthread_mutex_t celllock, renderlock;
 
   bool fullrerender;
 } state_t;
