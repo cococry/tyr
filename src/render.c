@@ -272,13 +272,23 @@ float rendertextui(
   return height; 
 }
 
-void 
-renderterminalrows(void) {
-  float y = 0;
-  pthread_mutex_lock(&s.celllock);
-  for (uint32_t i = 0; i < (uint32_t)s.rows; i++) {
-    char* row = NULL;
-    row = getrowutf8(s.head + i);
+
+void renderterminalrows(void) {
+  uint32_t start = s.smallestdirty;
+  uint32_t end   = s.largestdirty;
+
+  float y = start * s.font.font->line_h;
+
+  for (uint32_t i = start; i <= end; ++i) {
+    char* row = malloc((s.cols * 4) + 1);
+    char* ptr = row;
+
+    for (uint32_t j = 0; j < (uint32_t)s.cols; j++) {
+      uint32_t cp = s.cells[i * s.cols + j].codepoint;
+      ptr += utf8encode(cp, ptr);
+    }
+    *ptr = '\0';
+
     rendertextui(
       s.ui, 
       row,
@@ -289,9 +299,6 @@ renderterminalrows(void) {
     y += s.font.font->line_h;
     free(row);
   }
-  pthread_mutex_unlock(&s.celllock);
-
-  nrenders = 0;
 }
 
 void 

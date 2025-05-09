@@ -20,6 +20,8 @@
 
 #include "term.h"
 
+static _Atomic double last_pty_render_time = 0;
+#define FRAME_INTERVAL_SEC (1 / 60.0f) 
 
 pty_data_t* setuppty(void) {
   pty_data_t* data = malloc(sizeof(*data));
@@ -151,8 +153,12 @@ size_t readfrompty(void) {
 
   buflen += n;
 
+  int32_t dirty[s.rows];
+  memset(&dirty, 0, sizeof(dirty));
+  
   // decode as much as we can
     pthread_mutex_lock(&s.celllock);
+
   int i = 0;
   while (i < buflen) {
     uint32_t c;
@@ -161,17 +167,19 @@ size_t readfrompty(void) {
     handlechar(c);
     i += len;
   }
-    pthread_mutex_unlock(&s.celllock);
 
   // move any remaining incomplete sequence to the beginning
   if (i < buflen)
     memmove(readbuf, readbuf + i, buflen - i);
   buflen -= i;
+  pthread_mutex_unlock(&s.celllock);
+
 
   pthread_mutex_lock(&s.renderlock);
   atomic_store(&s.needrender, true);
   pthread_mutex_unlock(&s.renderlock);
-  glfwPostEmptyEvent();  // wake the main thread
+
+  glfwPostEmptyEvent();  
 
   return n;
 }

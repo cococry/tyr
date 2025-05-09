@@ -24,7 +24,8 @@
 
 state_t s;
 
-void handlechar(uint32_t c);
+static void resizeterm(int32_t w, int32_t h, int32_t cw, int32_t ch);
+
 
 void cleanup() {
   if (!s.pty) return;
@@ -96,6 +97,25 @@ void keycb(
     }
   }
 }
+
+
+void resizecb(
+  lf_ui_state_t* ui,
+  lf_window_t win,
+  uint32_t w, uint32_t h) {
+  (void)win;
+  (void)ui;
+  ui->render_resize_display(ui->render_state, w, h);
+  FT_Face face = s.font.font->face; 
+  int line_height = face->size->metrics.height >> 6; 
+  int x_advance = face->size->metrics.max_advance >> 6; 
+  pthread_mutex_lock(&s.renderlock);
+  pthread_mutex_lock(&s.celllock);
+  resizeterm(w, h, x_advance, line_height);
+  atomic_store(&s.needrender, true);
+  pthread_mutex_unlock(&s.celllock);
+  pthread_mutex_unlock(&s.renderlock);
+}
 void* waitforchild(void* arg) {
   pty_data_t* pty = (pty_data_t*)arg;
   int status;
@@ -117,42 +137,62 @@ void sendwinsize(int fd, int rows, int cols, int pixelw, int pixelh) {
   }
 }
 
+cell_t* reallocbuf(cell_t* old, int old_w, int old_h, int new_w, int new_h) {
+  cell_t* new = malloc(sizeof(cell_t) * new_w * new_h);
+  for (int r = 0; r < new_h; ++r) {
+    for (int c = 0; c < new_w; ++c) {
+      size_t idx = r * new_w + c;
+      if (r < old_h && c < old_w) {
+        new[idx] = old[r * old_w + c];
+      } else {
+        new[idx].codepoint = ' ';
+      }
+    }
+  }
+  free(old);
+  return new;
+}
+
 void resizeterm(int32_t w, int32_t h, int32_t cw, int32_t ch) {
   int32_t new_cols = w / cw;
   int32_t new_rows = h / ch;
-  size_t new_cell_count = (size_t)MAX_ROWS * new_cols;
 
   if (new_cols <= 0 || new_rows <= 0) return;
 
-  // reallocate primary cell buffer
-  s.cells = realloc(s.cells, sizeof(cell_t) * new_cell_count);
-  for (size_t i = 0; i < new_cell_count; i++) {
-    s.cells[i].codepoint = ' ';
-    s.cells[i].dirty = false;
-  }
+  // Save old dimensions
+  int32_t old_cols = s.cols;
+  int32_t old_rows = s.rows;
 
-  // reallocate alt buffer
-  if (s.altcells) free(s.altcells);
-  s.altcells = malloc(sizeof(cell_t) * new_cell_count);
-  for (size_t i = 0; i < new_cell_count; i++) {
-    s.altcells[i].codepoint = ' ';
-    s.altcells[i].dirty = false;
-  }
+  s.cells = reallocbuf(s.cells, old_cols, old_rows, new_cols, new_rows);
+  s.altcells  = reallocbuf(s.altcells, old_cols, old_rows, new_cols, new_rows);
 
-  // reallocate tab stops
+  s.smallestdirty = 0;
+  s.largestdirty = s.rows - 1;
+
+  // Reallocate tab stops
   if (s.tabs) free(s.tabs);
   s.tabs = malloc(sizeof(*s.tabs) * new_cols);
   for (int32_t i = 0; i < new_cols; i++) {
-    s.tabs[i] = i % 8 == 0;
+    s.tabs[i] = (i % 8 == 0);
   }
   s.tabs[0] = 0;
+  s.fullrerender = true;
 
-
-  // update size and mode
+  // Update dimensions
   s.cols = new_cols;
   s.rows = new_rows;
 
-  s.termmode = TERM_MODE_UTF8 | TERM_MODE_AUTO_WRAP;
+  // Clamp cursor
+  s.cursor.x = s.cursor.x < new_cols ? s.cursor.x : new_cols - 1;
+  s.cursor.y = s.cursor.y < new_rows ? s.cursor.y : new_rows - 1;
+
+  // Adjust margins
+  s.scrolltop = 0;
+  s.scrollbottom = new_rows - 1;
+
+  handlealtcursor(CURSOR_ACTION_STORE);
+  handlealtcursor(CURSOR_ACTION_RESTORE);
+
   sendwinsize(s.pty->masterfd, s.rows, s.cols, w, h);
 }
 
@@ -177,28 +217,17 @@ void nextevent(lf_ui_state_t* ui) {
   ui->_last_time = cur_time;
 
 
-  bool rendered = lf_windowing_get_current_event() == LF_EVENT_WINDOW_REFRESH;
-
   lf_ui_core_shape_widgets_if_needed(ui, ui->root, false);
 
   pthread_mutex_lock(&s.renderlock);
+  s.fullrerender = true;
   if (atomic_load(&s.needrender)) {
     vec2s winsize = lf_win_get_size(ui->win);
     pthread_mutex_lock(&s.celllock);
     if(s.fullrerender) {
-      // set all rows dirty
-      for(int32_t i = 0; i < s.rows; i++) {
-        setdirty(i, true);
-      }
+      s.smallestdirty = 0;
+      s.largestdirty = s.rows - 1;
     }
-    int32_t largest = 0, smallest = -1;
-    for(int32_t i = 0; i < s.rows; i++) {
-      if(s.cells[i * s.cols].dirty) {
-        if(smallest == -1) smallest = i;
-        if(i > largest) largest = i;
-      }
-    }
-    pthread_mutex_unlock(&s.celllock);
 
     lf_container_t area;
     if(s.fullrerender) {
@@ -208,34 +237,36 @@ void nextevent(lf_ui_state_t* ui) {
         area, winsize.y);
       ui->render_begin(ui->render_state);
       renderterminalrows();
+
       ui->render_end(ui->render_state);
       s.fullrerender = false;
-    } else {
-        uint32_t renderheight = (largest - smallest + 1) * s.font.font->line_h;
-        uint32_t renderstart = smallest * s.font.font->line_h;
+    } else if (s.smallestdirty <= s.largestdirty && s.smallestdirty != INT32_MAX) {
+      uint32_t renderheight = (s.largestdirty - s.smallestdirty + 1) * s.font.font->line_h;
+      uint32_t renderstart = s.smallestdirty * s.font.font->line_h;
 
-        ui->render_resize_display(ui, winsize.x, winsize.y);
-        area = (lf_container_t){
-          .pos = (vec2s){.x = 0, .y = renderstart},
-          .size = (vec2s){.x = winsize.x, .y = renderheight}
-        };
+      area = (lf_container_t){
+        .pos = (vec2s){.x = 0, .y = renderstart},
+        .size = (vec2s){.x = winsize.x, .y = renderheight}
+      };
 
-        ui->render_clear_color_area(
-          ui->root->props.color, 
-          area, winsize.y);
-        ui->render_begin(ui->render_state);
-        renderterminalrows();
-        ui->render_end(ui->render_state);
+      ui->render_clear_color_area(
+        ui->root->props.color, 
+        area, winsize.y);
+      ui->render_begin(ui->render_state);
+      renderterminalrows();
+      ui->render_end(ui->render_state);
+
+      // Reset dirty region AFTER drawing
+      s.smallestdirty = UINT32_MAX;
+      s.largestdirty = 0;
     }
 
     lf_win_swap_buffers(ui->win);
     atomic_store(&s.needrender, false);
+    pthread_mutex_unlock(&s.celllock);
     pthread_mutex_unlock(&s.renderlock);
   } else {
     pthread_mutex_unlock(&s.renderlock);
-  }
-  if (!rendered) {
-    ui->_idle_delay_func(ui);
   }
 
   lf_windowing_update();
@@ -283,6 +314,7 @@ int main() {
 
   lf_win_set_typing_char_cb(win, charcb);
   lf_win_set_key_cb(win, keycb);
+  lf_win_set_resize_cb(win, resizecb);
 
 
   s.font = lf_asset_manager_request_font(
@@ -302,6 +334,8 @@ int main() {
   s.saved_head = s.head;
   s.fullrerender = true;
   s.fontadvance = 0;
+  s.smallestdirty = 0;
+  s.largestdirty = s.rows - 1;
 
   if (pthread_create(&s.pty->ptythread, NULL, ptyhandler, (void *)s.pty) != 0) {
     fprintf(stderr, "twr: pty: error creating pty thread\n");

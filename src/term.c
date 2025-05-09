@@ -143,19 +143,6 @@ int32_t utf8encode(uint32_t codepoint, char *out) {
   return 0;
 }
 
-char* getrowutf8(uint32_t idx) {
-  char* row = malloc((s.cols * 4) + 1);
-  char* ptr = row;
-
-  for (uint32_t i = 0; i < (uint32_t)s.cols; i++) {
-    uint32_t cp = s.cells[idx * s.cols + i].codepoint;
-    ptr += utf8encode(cp, ptr);
-  }
-
-  *ptr = '\0'; // Null-terminate
-  return row;
-}
-
 cell_t* getphysrow(int32_t logicalrow) {
   int32_t physrow = (s.head + logicalrow) % MAX_ROWS;
   return &s.cells[physrow * s.cols];
@@ -922,7 +909,8 @@ void handlechar(uint32_t c) {
     return;
   }
 
-  if (s.cursorstate & CURSOR_STATE_ONWRAP && lf_flag_exists(&s.termmode, TERM_MODE_AUTO_WRAP)) {
+  if (s.cursorstate & CURSOR_STATE_ONWRAP) {
+    printf("Moving cursor.\n");
     newline(true);
   }
 	
@@ -951,7 +939,12 @@ void handlechar(uint32_t c) {
 }
 
 void setdirty(uint32_t rowidx, bool dirty) {
-  s.cells[rowidx * s.cols].dirty = dirty;
+  if (!dirty) return;
 
-  //printf("Set: %i dirty.\n", rowidx * s.cols);
+  if (rowidx < s.smallestdirty) {
+    s.smallestdirty = rowidx;
+  }
+  if (rowidx > s.largestdirty) {
+    s.largestdirty = rowidx;
+  }
 }

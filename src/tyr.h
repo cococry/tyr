@@ -125,18 +125,18 @@ typedef enum {
   FONT_HIDDEN           = 7,
 } term_font_style_t;
 
+typedef enum {
+  CHARSET_ASCII = 0,
+  CHARSET_ALT   = 1, // DEC Special Graphics
+} charset_mode_t;
+
+
 typedef struct {
   term_color_16_t bg, fg;
   uint32_t codepoint;
   term_font_style_t font_style;
   bool dirty;
 } cell_t;
-
-typedef enum {
-  CHARSET_ASCII = 0,
-  CHARSET_ALT   = 1, // DEC Special Graphics
-} charset_mode_t;
-
 
 typedef struct {
   lf_ui_state_t* ui;
@@ -174,8 +174,10 @@ typedef struct {
   _Atomic bool needrender;
 
   pthread_mutex_t celllock, renderlock;
+  int32_t largestdirty, smallestdirty;
 
   bool fullrerender;
+
 } state_t;
 
 extern state_t s;
