@@ -1,6 +1,7 @@
 #include <GLFW/glfw3.h>
 #include <leif/color.h>
 #include <leif/ez_api.h>
+#include <leif/render.h>
 #include <leif/task.h>
 #include <leif/ui_core.h>
 #include <leif/util.h>
@@ -99,23 +100,57 @@ void keycb(
 }
 
 
+#define RESIZE_DELAY_MS 100
+
+static struct timespec last_resize_time = {0};
+static atomic_bool resize_pending = false;
+static atomic_bool resizing_done = true;
+
+static bool resizing = false;
 void resizecb(
   lf_ui_state_t* ui,
   lf_window_t win,
   uint32_t w, uint32_t h) {
   (void)win;
-  (void)ui;
-  ui->render_resize_display(ui->render_state, w, h);
-  FT_Face face = s.font.font->face; 
-  int line_height = face->size->metrics.height >> 6; 
-  int x_advance = face->size->metrics.max_advance >> 6; 
-  pthread_mutex_lock(&s.renderlock);
-  pthread_mutex_lock(&s.celllock);
-  resizeterm(w, h, x_advance, line_height);
-  atomic_store(&s.needrender, true);
-  pthread_mutex_unlock(&s.celllock);
-  pthread_mutex_unlock(&s.renderlock);
+    ui->render_resize_display(ui->render_state, w, h);
+    atomic_store(&s.needrender, true);
+    s.fullrerender = true;
+
+    clock_gettime(CLOCK_MONOTONIC, &last_resize_time);
+    atomic_store(&resize_pending, true);
+    atomic_store(&resizing_done, false);
+    resizing = true;
 }
+
+void mayberesize() {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+
+  long elapsed_ms = (now.tv_sec - last_resize_time.tv_sec) * 1000 +
+                    (now.tv_nsec - last_resize_time.tv_nsec) / 1000000;
+
+
+  if (atomic_load(&resize_pending) && elapsed_ms >= RESIZE_DELAY_MS) {
+    FT_Face face = s.font.font->face; 
+    int line_height = face->size->metrics.height >> 6; 
+    int x_advance = face->size->metrics.max_advance >> 6;
+
+    int32_t w, h;
+    glfwGetWindowSize(s.ui->win, &w, &h);
+    pthread_mutex_lock(&s.renderlock);
+    pthread_mutex_lock(&s.celllock);
+    resizeterm(w, h, x_advance, line_height);
+    atomic_store(&s.needrender, true);
+    pthread_mutex_unlock(&s.celllock);
+    pthread_mutex_unlock(&s.renderlock);
+
+    atomic_store(&resize_pending, false);
+    atomic_store(&resizing_done, true);
+    resizing = false;
+  }
+}
+
+
 void* waitforchild(void* arg) {
   pty_data_t* pty = (pty_data_t*)arg;
   int status;
@@ -198,7 +233,13 @@ void resizeterm(int32_t w, int32_t h, int32_t cw, int32_t ch) {
 
 void nextevent(lf_ui_state_t* ui) {
   lf_task_flush_all_tasks();
-  glfwWaitEvents();
+  if(resizing) {
+  glfwPollEvents();
+  } else {
+    glfwWaitEvents();
+  }
+
+  mayberesize();
 
   for (uint32_t i = 0; i < ui->timers.size; i++) {
     if(!ui->timers.items[i].paused)
@@ -220,7 +261,6 @@ void nextevent(lf_ui_state_t* ui) {
   lf_ui_core_shape_widgets_if_needed(ui, ui->root, false);
 
   pthread_mutex_lock(&s.renderlock);
-  s.fullrerender = true;
   if (atomic_load(&s.needrender)) {
     vec2s winsize = lf_win_get_size(ui->win);
     pthread_mutex_lock(&s.celllock);
@@ -237,11 +277,41 @@ void nextevent(lf_ui_state_t* ui) {
         area, winsize.y);
       ui->render_begin(ui->render_state);
       renderterminalrows();
+      if(resizing) {
+        char text[32];
+
+        FT_Face face = s.font.font->face; 
+        int line_height = face->size->metrics.height >> 6; 
+        int x_advance = face->size->metrics.max_advance >> 6;
+        sprintf(text, "%ix%i", (int)winsize.x / x_advance, (int)winsize.y / line_height);
+        lf_text_dimension_t dim  = ui->render_get_text_dimension(ui->render_state, text,
+                                                    s.font.font);
+        vec2s pos = (vec2s){
+            .x = (winsize.x - dim.width) / 2.0f, 
+            .y = (winsize.y - dim.height) / 2.0f, 
+          };
+        float padding = 5.0f;
+        ui->render_rect(
+          ui->render_state,
+          (vec2s){
+            .x = pos.x - padding,
+            .y = pos.y - padding
+          },
+          (vec2s){
+            .x = dim.width + padding * 2, 
+            .y = dim.height + padding * 2
+          },
+          LF_WHITE, LF_WHITE, 0.0f, 5.0f);
+        ui->render_text(ui->render_state,
+                        text, s.font.font,
+                        pos, LF_BLACK
+                        );
+      }
 
       ui->render_end(ui->render_state);
       s.fullrerender = false;
     } else if (s.smallestdirty <= s.largestdirty && s.smallestdirty != INT32_MAX) {
-      uint32_t renderheight = (s.largestdirty - s.smallestdirty + 1) * s.font.font->line_h;
+      uint32_t renderheight = (s.largestdirty + 1 - s.smallestdirty + 1) * s.font.font->line_h;
       uint32_t renderstart = s.smallestdirty * s.font.font->line_h;
 
       area = (lf_container_t){
@@ -255,10 +325,6 @@ void nextevent(lf_ui_state_t* ui) {
       ui->render_begin(ui->render_state);
       renderterminalrows();
       ui->render_end(ui->render_state);
-
-      // Reset dirty region AFTER drawing
-      s.smallestdirty = UINT32_MAX;
-      s.largestdirty = 0;
     }
 
     lf_win_swap_buffers(ui->win);
