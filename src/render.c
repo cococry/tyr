@@ -81,7 +81,8 @@ text_props_t rendertextranged(
   RnColor color, 
   bool render,
   uint32_t rbegin,
-  int32_t rend) {
+  int32_t rend,
+  int32_t rowidx) {
   // Get the harfbuzz text information for the string
   RnHarfbuzzText* hb_text = rn_hb_text_from_str(state, *font, text);
 
@@ -92,6 +93,7 @@ text_props_t rendertextranged(
   float scale = 1.0f;
   float w = 0.0f;
   float max_top = 0, min_bottom = 0;
+  int32_t charx = 0;
   if (font->selected_strike_size)
     scale = ((float)font->size / (float)font->selected_strike_size);
   for (uint32_t i = rbegin; i < (rend == -1 ? hb_text->glyph_count : 
@@ -127,6 +129,8 @@ text_props_t rendertextranged(
     float offset = (pos.y + (hb_text->highest_bearing - glyph.bearing_y)) - pos.y;
     if(render) {
       rn_glyph_render(state, glyph, *font, glyph_pos, color);
+      if(charx == s.cursor.x && rowidx == s.cursor.y) {
+      }
     }
 
     if (glyph.glyph_top + offset > max_top) {
@@ -140,6 +144,7 @@ text_props_t rendertextranged(
     pos.x += (font->selected_strike_size != 0 ?  x_advance / 2 : x_advance); 
 
     w += s.fontadvance;
+    charx++;
   }
 
   return (text_props_t){
@@ -163,7 +168,7 @@ bool containsnonascii(const char *str) {
   return false;
 }
 
-float rendertextui(
+void rendertextui(
   lf_ui_state_t* ui,
   const char* text, 
   lf_mapped_font_t mapped_font, 
@@ -173,20 +178,7 @@ float rendertextui(
 ) {
   if (!mapped_font.font) {
     fprintf(stderr, "tyr: trying to render with unregistered font.\n");
-    return 0.0f;
-  }
-  nrenders++;
-
-  // we assume that every main terminal font contains all 
-  // ASCII characters. To save performace and not bother with 
-  // fallback fonts.
-  if(!containsnonascii(text)) {
-    text_props_t props = rendertextranged(
-      ui->render_state, text, mapped_font.font,
-      (vec2s){.x = pos.x, .y = pos.y},
-      color, render, 0,-1 
-    );
-    return props.props.height;
+    return;
   }
 
   RnHarfbuzzText* hb_text = rn_hb_text_from_str(ui->render_state, *mapped_font.font, text);
@@ -211,12 +203,11 @@ float rendertextui(
     lf_mapped_font_t current_font = rendering_ranges[iranges].font;
     lf_mapped_font_t next_font = current_font;
 
-    uint32_t charidx = FT_Get_Char_Index(current_font.font->face, unicode_codepoint);
-    if (charidx == 0
-      || (charidx != 0 &&
+    if (FT_Get_Char_Index(current_font.font->face, unicode_codepoint) == 0
+      || (FT_Get_Char_Index(mapped_font.font->face, unicode_codepoint) != 0 &&
       current_font.font != mapped_font.font)) {
       // current font cannot render this codepoint
-      if (charidx != 0) {
+      if (FT_Get_Char_Index(mapped_font.font->face, unicode_codepoint) != 0) {
         // mapped font can render -> switch back
         next_font = mapped_font;
       } else {
@@ -226,6 +217,7 @@ float rendertextui(
           lf_mapped_font_t fallback_font = lf_asset_manager_request_font(
             ui, fallback_family, mapped_font.style.style, 
             mapped_font.pixel_size);
+
           if (fallback_font.font) {
             next_font = fallback_font;
           } else {
@@ -248,7 +240,6 @@ float rendertextui(
 
   float posx = pos.x;
   float spacing = 0;
-  float height = 0.0f;
   for (uint32_t i = 0; i < nranges; i++) {
     rendering_range_t range = rendering_ranges[i];
     if (range.font.font == mapped_font.font) {
@@ -259,27 +250,21 @@ float rendertextui(
     text_props_t props = rendertextranged(
       ui->render_state, text, range.font.font,
       (vec2s){.x = posx, .y = pos.y},
-      color, render, range.begin, range.end
+      color, render, range.begin, range.end,
+      i
     );
-
-    if(props.props.height > height) height = props.props.height;
 
     posx += props.props.width;
     if (range.font.font != mapped_font.font) {
       spacing += props.occupied_w - props.props.width;
     }
   }
-  return height; 
 }
 
-
 void renderterminalrows(void) {
-  uint32_t start = s.smallestdirty;
-  uint32_t end   = s.largestdirty;
+  float y = 0;
+  for (uint32_t i = 0; i < (uint32_t)s.rows; i++) {
 
-  float y = start * s.font.font->line_h;
-
-  for (uint32_t i = start; i <= end; ++i) {
     char* row = malloc((s.cols * 4) + 1);
     char* ptr = row;
 
@@ -290,7 +275,7 @@ void renderterminalrows(void) {
     *ptr = '\0';
 
     rendertextui(
-      s.ui, 
+      s.ui,
       row,
       s.font,
       (vec2s){.x = 0, .y = y},
@@ -298,6 +283,23 @@ void renderterminalrows(void) {
 
     y += s.font.font->line_h;
     free(row);
+  }
+}
+
+void renderterminalrows_range(uint32_t from, uint32_t to) {
+  float y = from * s.font.font->line_h;
+  for (uint32_t i = from; i <= to; i++) {
+
+    char* row = malloc((s.cols * 4) + 1);
+    char* ptr = row;
+    for (uint32_t j = 0; j < s.cols; j++)
+      ptr += utf8encode(s.cells[i * s.cols + j].codepoint, ptr);
+    *ptr = '\0';
+
+    rendertextui(s.ui, row, s.font, (vec2s){.x = 0, .y = y}, RN_WHITE, true);
+    free(row);
+
+    y += s.font.font->line_h;
   }
 }
 

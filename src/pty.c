@@ -20,7 +20,6 @@
 
 #include "term.h"
 
-static _Atomic double last_pty_render_time = 0;
 #define FRAME_INTERVAL_SEC (1 / 60.0f) 
 
 pty_data_t* setuppty(void) {
@@ -73,31 +72,8 @@ pty_data_t* setuppty(void) {
 }
 
 void* ptyhandler(void* data) {
-  pty_data_t* pty = (pty_data_t*)data;
-  fd_set fds;
-  int maxfd = pty->masterfd > pty->shutdown_pipe[0] ? pty->masterfd : pty->shutdown_pipe[0];
-  maxfd = STDIN_FILENO > maxfd ? STDIN_FILENO : maxfd;
 
   while (true) {
-    FD_ZERO(&fds);
-    FD_SET(pty->masterfd, &fds);
-    FD_SET(STDIN_FILENO, &fds);
-    FD_SET(pty->shutdown_pipe[0], &fds);
-
-    int ret = select(maxfd + 1, &fds, NULL, NULL, NULL);
-    if (ret < 0) {
-      perror("select");
-      break;
-    }
-
-    if (FD_ISSET(pty->shutdown_pipe[0], &fds)) {
-      // Clean shutdown requested
-      break;
-    }
-
-    if (FD_ISSET(pty->masterfd, &fds)) {
-      readfrompty();
-    }
   }
 
 
@@ -142,22 +118,17 @@ void writetopty(const char* buf, size_t len) {
 size_t readfrompty(void) {
   static char readbuf[BUF_SIZE];
   static int buflen = 0;
+
   int n = read(s.pty->masterfd, readbuf + buflen, sizeof(readbuf) - buflen);
   if (n == 0) {
     s.ui->running = false;
-    return n;
+    return 0;
   } else if (n == -1) {
     fprintf(stderr, "tyr: failed to read from shell: %s\n", strerror(errno));
     exit(1);
   }
 
   buflen += n;
-
-  int32_t dirty[s.rows];
-  memset(&dirty, 0, sizeof(dirty));
-  
-  // decode as much as we can
-    pthread_mutex_lock(&s.celllock);
 
   int i = 0;
   while (i < buflen) {
@@ -168,18 +139,10 @@ size_t readfrompty(void) {
     i += len;
   }
 
-  // move any remaining incomplete sequence to the beginning
+  // move leftover bytes (incomplete UTF-8) to beginning
   if (i < buflen)
     memmove(readbuf, readbuf + i, buflen - i);
   buflen -= i;
-  pthread_mutex_unlock(&s.celllock);
-
-
-  pthread_mutex_lock(&s.renderlock);
-  atomic_store(&s.needrender, true);
-  pthread_mutex_unlock(&s.renderlock);
-
-  glfwPostEmptyEvent();  
 
   return n;
 }
@@ -200,15 +163,12 @@ termhandlecharstream(const char* buf, uint32_t buflen) {
       codepoint = buf[n] & 0xFF;
       charsize = 1;
     }
-    pthread_mutex_lock(&s.celllock);
     handlechar(codepoint);
-    pthread_mutex_unlock(&s.celllock);
     n += charsize;
   }
   
   char dummy = 1;
   write(s.pty->notify_pipe[1], &dummy, 1);
-  glfwPostEmptyEvent();  // wake the main thread
 
   return n;
 }

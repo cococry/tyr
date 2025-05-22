@@ -164,19 +164,17 @@ typedef struct {
 
   charset_mode_t charset;
 
-  GLuint fbo;
-  GLuint fbo_texture;
-  vec2s fbo_size;
-
   lf_mapped_font_t font;
   float fontadvance;
 
   _Atomic bool needrender;
 
-  pthread_mutex_t celllock, renderlock;
-  int32_t largestdirty, smallestdirty;
+  char** rowsunicode;
 
   bool fullrerender;
+
+  uint8_t* dirty_write; // modified only by PTY thread
+  uint8_t* dirty_read;  // read/cleared only by render thread
 
 } state_t;
 

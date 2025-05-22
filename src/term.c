@@ -198,7 +198,6 @@ cell_t* cellat(int32_t x, int32_t y) {
 }
 void setcell(int32_t x, int32_t y, uint32_t codepoint) {
   s.cells[y * s.cols + x].codepoint = codepoint;
-  setdirty(y, true);
 }
 
 void togglealtscreen(void) {
@@ -939,12 +938,4 @@ void handlechar(uint32_t c) {
 }
 
 void setdirty(uint32_t rowidx, bool dirty) {
-  if (!dirty) return;
-
-  if (rowidx < s.smallestdirty) {
-    s.smallestdirty = rowidx;
-  }
-  if (rowidx > s.largestdirty) {
-    s.largestdirty = rowidx;
-  }
 }
