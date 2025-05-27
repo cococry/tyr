@@ -173,8 +173,7 @@ typedef struct {
 
   bool fullrerender;
 
-  uint8_t* dirty_write; // modified only by PTY thread
-  uint8_t* dirty_read;  // read/cleared only by render thread
+  uint8_t* dirty;
 
 } state_t;
 

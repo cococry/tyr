@@ -264,7 +264,10 @@ void rendertextui(
 void renderterminalrows(void) {
   float y = 0;
   for (uint32_t i = 0; i < (uint32_t)s.rows; i++) {
-
+    if(!s.dirty[i]) {
+      y += s.font.font->line_h;
+      continue;
+    }
     char* row = malloc((s.cols * 4) + 1);
     char* ptr = row;
 
@@ -281,6 +284,9 @@ void renderterminalrows(void) {
       (vec2s){.x = 0, .y = y},
       RN_WHITE, true);
 
+    printf("Rendered %i\n", i);
+    s.dirty[i] = 0;
+
     y += s.font.font->line_h;
     free(row);
   }
@@ -292,7 +298,7 @@ void renderterminalrows_range(uint32_t from, uint32_t to) {
 
     char* row = malloc((s.cols * 4) + 1);
     char* ptr = row;
-    for (uint32_t j = 0; j < s.cols; j++)
+    for (int32_t j = 0; j < s.cols; j++)
       ptr += utf8encode(s.cells[i * s.cols + j].codepoint, ptr);
     *ptr = '\0';
 

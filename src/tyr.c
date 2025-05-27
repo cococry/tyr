@@ -77,7 +77,6 @@ void resizecb(lf_ui_state_t* ui, lf_window_t win, uint32_t w, uint32_t h) {
   int32_t new_rows = w / line_height;
   if(new_cols != s.cols || new_rows != s.rows)
     resizeterm(h, w, x_advance, line_height);
-  
 }
 
 void sendwinsize(int fd, int rows, int cols, int pixelw, int pixelh) {
@@ -107,7 +106,8 @@ void resizeterm(int32_t w, int32_t h, int32_t cw, int32_t ch) {
   s.altcells = reallocbuf(s.altcells, old_cols, old_rows, new_cols, new_rows);
   free(s.tabs);
   s.tabs = malloc(sizeof(*s.tabs) * new_cols);
-  for (int32_t i = 0; i < new_cols; i++) s.tabs[i] = (i % 8 == 0);
+  for (int32_t i = 0; i < new_cols; i++) 
+    s.tabs[i] = (i % 8 == 0);
   s.tabs[0] = 0;
   s.fullrerender = true;
   s.cols = new_cols;
@@ -117,11 +117,11 @@ void resizeterm(int32_t w, int32_t h, int32_t cw, int32_t ch) {
   s.scrolltop = 0;
   s.scrollbottom = new_rows - 1;
   s.rowsunicode = malloc(sizeof(char*) * s.rows);
-  for (int32_t i = 0; i < s.rows; i++) s.rowsunicode[i] = malloc((s.cols * 4) + 1);
+  for (int32_t i = 0; i < s.rows; i++) 
+    s.rowsunicode[i] = malloc((s.cols * 4) + 1);
   handlealtcursor(CURSOR_ACTION_STORE);
   handlealtcursor(CURSOR_ACTION_RESTORE);
-  s.dirty_write = calloc(new_rows, sizeof(uint8_t));
-  s.dirty_read  = calloc(new_rows, sizeof(uint8_t));
+  s.dirty = realloc(s.dirty, new_rows * sizeof(uint8_t));
   sendwinsize(s.pty->masterfd, s.rows, s.cols, w, h);
 }
 void nextevent(lf_ui_state_t* ui) {
@@ -140,6 +140,8 @@ void nextevent(lf_ui_state_t* ui) {
     }
   }
 
+  s.fullrerender = true;
+
   float cur_time = lf_ui_core_get_elapsed_time();
   ui->delta_time = cur_time - ui->_last_time;
   ui->_last_time = cur_time;
@@ -147,9 +149,22 @@ void nextevent(lf_ui_state_t* ui) {
 
   lf_ui_core_shape_widgets_if_needed(ui, ui->root, false);
 
-    vec2s winsize = lf_win_get_size(ui->win);
-  s.fullrerender = true;
-    lf_container_t area;
+  vec2s winsize = lf_win_get_size(ui->win);
+  lf_container_t area;
+
+  if(s.fullrerender) {
+    for(int32_t i = 0; i < s.rows; i++) {
+      s.dirty[i] = 1;
+    }
+  }
+  int32_t largest = 0, smallest = -1;
+  for(int32_t i = 0; i < s.rows; i++) {
+    if(s.dirty[i]) {
+      if(smallest == -1) smallest = i;
+      if(i > largest) largest = i;
+    }
+  }
+
     if(s.fullrerender) {
       area = LF_SCALE_CONTAINER(winsize.x, winsize.y);
       ui->render_clear_color_area(
@@ -157,43 +172,13 @@ void nextevent(lf_ui_state_t* ui) {
         area, winsize.y);
       ui->render_begin(ui->render_state);
       renderterminalrows();
-      if(false) {
-        char text[32];
-
-        FT_Face face = s.font.font->face; 
-        int line_height = face->size->metrics.height >> 6; 
-        int x_advance = face->size->metrics.max_advance >> 6;
-        sprintf(text, "%ix%i", (int)winsize.x / x_advance, (int)winsize.y / line_height);
-        lf_text_dimension_t dim  = ui->render_get_text_dimension(ui->render_state, text,
-                                                    s.font.font);
-        vec2s pos = (vec2s){
-            .x = (winsize.x - dim.width) / 2.0f, 
-            .y = (winsize.y - dim.height) / 2.0f, 
-          };
-        float padding = 5.0f;
-        ui->render_rect(
-          ui->render_state,
-          (vec2s){
-            .x = pos.x - padding,
-            .y = pos.y - padding
-          },
-          (vec2s){
-            .x = dim.width + padding * 2, 
-            .y = dim.height + padding * 2
-          },
-          LF_WHITE, LF_WHITE, 0.0f, 5.0f);
-        ui->render_text(ui->render_state,
-                        text, s.font.font,
-                        pos, LF_BLACK
-                        );
-      }
 
       ui->render_end(ui->render_state);
       s.fullrerender = false;
-    } else if (false) {
-      /*uint32_t renderheight = (s.largestdirty + 1 - s.smallestdirty + 1) * s.font.font->line_h;
-      uint32_t renderstart = s.smallestdirty * s.font.font->line_h;
-
+  lf_win_swap_buffers(ui->win);
+    } else if (smallest != -1) {
+      uint32_t renderheight = (largest + 1 - smallest + 1) * s.font.font->line_h;
+      uint32_t renderstart = smallest * s.font.font->line_h;
       area = (lf_container_t){
         .pos = (vec2s){.x = 0, .y = renderstart},
         .size = (vec2s){.x = winsize.x, .y = renderheight}
@@ -204,10 +189,10 @@ void nextevent(lf_ui_state_t* ui) {
         area, winsize.y);
       ui->render_begin(ui->render_state);
       renderterminalrows();
-      ui->render_end(ui->render_state);*/
+      ui->render_end(ui->render_state);
+  lf_win_swap_buffers(ui->win);
     }
 
-  lf_win_swap_buffers(ui->win);
 
   lf_windowing_update();
   // Remove expired timers
@@ -260,7 +245,6 @@ void mainloop(void) {
       lf_windowing_next_event();
       lf_event_type_t e = lf_windowing_get_current_event();
 
-      printf("Got here.\n");
       // Only render for meaningful X events
       if (e == LF_EVENT_KEY_PRESS ||
           e == LF_EVENT_TYPING_CHAR ||
@@ -373,7 +357,7 @@ int main() {
   lf_win_set_typing_char_cb(win, charcb);
   lf_win_set_key_cb(win, keycb);
   lf_win_set_resize_cb(win, resizecb);
-  s.font = lf_asset_manager_request_font(s.ui, "JetBrains Mono Nerd Font", LF_FONT_STYLE_REGULAR, 28);
+  s.font = lf_asset_manager_request_font(s.ui, "JetBrains Mono Nerd Font", LF_FONT_STYLE_REGULAR, 28);;
   FT_Face face = s.font.font->face;
   int line_height = face->size->metrics.height >> 6;
   int x_advance = face->size->metrics.max_advance >> 6;
