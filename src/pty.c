@@ -71,14 +71,6 @@ pty_data_t* setuppty(void) {
   return data;
 }
 
-void* ptyhandler(void* data) {
-
-  while (true) {
-  }
-
-
-  return NULL;
-}
 
 void writetopty(const char* buf, size_t len) {
   fd_set fdwrite, fdread;

@@ -148,6 +148,18 @@ cell_t* getphysrow(int32_t logicalrow) {
   return &s.cells[physrow * s.cols];
 }
 
+char* getrowutf8(uint32_t idx) {
+  char* row = malloc((s.cols * 4) + 1);
+  char* ptr = row;
+
+  for (uint32_t i = 0; i < (uint32_t)s.cols; i++) {
+    uint32_t cp = s.cells[idx * s.cols + i].codepoint;
+    ptr += utf8encode(cp, ptr);
+  }
+
+  *ptr = '\0'; // Null-terminate
+  return row;
+}
 bool 
 isctrl(uint32_t c) {
   // C0 range: 0x00 - 0x1F, plus DEL (0x7F)
@@ -220,6 +232,8 @@ void moveto(int32_t x, int32_t y) {
   s.cursor.x = CLAMP(x, 0, s.cols - 1);
   s.cursor.y = CLAMP(y, miny, maxy);
   lf_flag_unset(&s.cursorstate, CURSOR_STATE_ONWRAP);
+  if(y > s.rows - 1)
+    setdirty(y, true);
 }
 
 void handlealtcursor(cursor_action_t action) {
@@ -247,6 +261,7 @@ void movetodecom(int32_t x, int32_t y) {
   bool cursororigin = lf_flag_exists(&s.cursorstate, CURSOR_STATE_ORIGIN); 
   moveto(
     x, y + (cursororigin ? s.scrolltop : 0));
+  setdirty(y, true);
 }
 void 
 deletecells(int32_t ncells) {
@@ -265,6 +280,7 @@ deletecells(int32_t ncells) {
     &cursorrow[dest], 
     &cursorrow[src], n * sizeof(cell_t));
 
+  setdirty(s.cursor.y, true);
   // clear the trailing garbage characters after the move
   for(int32_t x = s.cols - ncells; x < s.cols; x++) {
     cursorrow[x].codepoint = ' ';
@@ -288,6 +304,7 @@ void insertblankchars(int32_t nchars) {
   memmove(
     &cursorrow[dest], 
     &cursorrow[src], n * sizeof(cell_t));
+  setdirty(s.cursor.y, true);
 
   // Insert blank cells
   for (int32_t x = src; x < dest; x++) {
@@ -929,6 +946,7 @@ void handlechar(uint32_t c) {
   if (w == 2 && s.cursor.x + 1 < s.cols) {
     setcell(s.cursor.x + 1, s.cursor.y, ' ');
   }
+  s.dirty[s.cursor.y] = true;
   s.recentcodepoint = c;
 
   if (s.cursor.x + w < s.cols) {
@@ -940,5 +958,4 @@ void handlechar(uint32_t c) {
 
 void setdirty(uint32_t rowidx, bool dirty) {
   s.dirty[rowidx] = (uint8_t)dirty;
-  //printf("s.dirty[%i] = %i;\n", rowidx, (uint8_t)dirty);
 }

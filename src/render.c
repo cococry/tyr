@@ -127,10 +127,24 @@ text_props_t rendertextranged(
       .y = pos.y + hb_text->highest_bearing  
     };
     float offset = (pos.y + (hb_text->highest_bearing - glyph.bearing_y)) - pos.y;
+    charx++;
     if(render) {
-      rn_glyph_render(state, glyph, *font, glyph_pos, color);
       if(charx == s.cursor.x && rowidx == s.cursor.y) {
+        FT_Face face = s.font.font->face;
+        int line_height = face->size->metrics.height >> 6;
+        int x_advance = face->size->metrics.max_advance >> 6;
+        printf("%i\n", rowidx);
+        rn_rect_render(
+          state, 
+          (vec2s){
+            .x = glyph_pos.x + glyph.bearing_x + x_advance, 
+            .y = rowidx * s.font.font->line_h }, 
+          (vec2s)
+            {
+              .x = x_advance, .y = line_height }, 
+          RN_WHITE);
       }
+      rn_glyph_render(state, glyph, *font, glyph_pos, color);
     }
 
     if (glyph.glyph_top + offset > max_top) {
@@ -144,7 +158,6 @@ text_props_t rendertextranged(
     pos.x += (font->selected_strike_size != 0 ?  x_advance / 2 : x_advance); 
 
     w += s.fontadvance;
-    charx++;
   }
 
   return (text_props_t){
@@ -174,7 +187,8 @@ void rendertextui(
   lf_mapped_font_t mapped_font, 
   vec2s pos, 
   RnColor color, 
-  bool render
+  bool render,
+  uint32_t rowidx
 ) {
   if (!mapped_font.font) {
     fprintf(stderr, "tyr: trying to render with unregistered font.\n");
@@ -251,7 +265,7 @@ void rendertextui(
       ui->render_state, text, range.font.font,
       (vec2s){.x = posx, .y = pos.y},
       color, render, range.begin, range.end,
-      i
+      rowidx
     );
 
     posx += props.props.width;
@@ -261,49 +275,42 @@ void rendertextui(
   }
 }
 
-void renderterminalrows(void) {
+
+void 
+renderterminalrows(void) {
   float y = 0;
   for (uint32_t i = 0; i < (uint32_t)s.rows; i++) {
-    if(!s.dirty[i]) {
+    if (s.dirty[i] == 0) {
       y += s.font.font->line_h;
       continue;
     }
-    char* row = malloc((s.cols * 4) + 1);
-    char* ptr = row;
 
-    for (uint32_t j = 0; j < (uint32_t)s.cols; j++) {
-      uint32_t cp = s.cells[i * s.cols + j].codepoint;
-      ptr += utf8encode(cp, ptr);
-    }
-    *ptr = '\0';
-
-    rendertextui(
-      s.ui,
-      row,
-      s.font,
-      (vec2s){.x = 0, .y = y},
-      RN_WHITE, true);
-
-    printf("Rendered %i\n", i);
-    s.dirty[i] = 0;
-
-    y += s.font.font->line_h;
-    free(row);
-  }
-}
-
-void renderterminalrows_range(uint32_t from, uint32_t to) {
-  float y = from * s.font.font->line_h;
-  for (uint32_t i = from; i <= to; i++) {
-
-    char* row = malloc((s.cols * 4) + 1);
+    char* row = s.rowsunicode[i]; 
     char* ptr = row;
     for (int32_t j = 0; j < s.cols; j++)
       ptr += utf8encode(s.cells[i * s.cols + j].codepoint, ptr);
     *ptr = '\0';
 
-    rendertextui(s.ui, row, s.font, (vec2s){.x = 0, .y = y}, RN_WHITE, true);
-    free(row);
+    rendertextui(s.ui, row, s.font, (vec2s){.x = 0, .y = y}, RN_WHITE, true, i);
+
+    y += s.font.font->line_h;
+    s.dirty[i] = 0;
+  }
+  nrenders = 0;
+}
+
+
+void renderterminalrows_range(uint32_t from, uint32_t to) {
+  float y = from * s.font.font->line_h;
+  for (uint32_t i = from; i <= to; i++) {
+
+    char* row = s.rowsunicode[i]; 
+    char* ptr = row;
+    for (int32_t j = 0; j < s.cols; j++)
+      ptr += utf8encode(s.cells[i * s.cols + j].codepoint, ptr);
+    *ptr = '\0';
+
+    rendertextui(s.ui, row, s.font, (vec2s){.x = 0, .y = y}, RN_WHITE, true, i);
 
     y += s.font.font->line_h;
   }

@@ -73,6 +73,7 @@ void resizecb(lf_ui_state_t* ui, lf_window_t win, uint32_t w, uint32_t h) {
   int line_height = face->size->metrics.height >> 6; 
   int x_advance = face->size->metrics.max_advance >> 6;
 
+  s.fullrerender = true;
   int32_t new_cols = h / x_advance;
   int32_t new_rows = w / line_height;
   if(new_cols != s.cols || new_rows != s.rows)
@@ -123,16 +124,24 @@ void resizeterm(int32_t w, int32_t h, int32_t cw, int32_t ch) {
   handlealtcursor(CURSOR_ACTION_RESTORE);
   s.dirty = realloc(s.dirty, new_rows * sizeof(uint8_t));
   sendwinsize(s.pty->masterfd, s.rows, s.cols, w, h);
+
+  s.rowsunicode = realloc(s.rowsunicode, sizeof(char*) * s.rows);
+  for(int32_t i = 0; i < s.rows; i++) {
+    s.rowsunicode[i] = realloc(s.rowsunicode[i], (s.cols * 4) + 1);
+  }
 }
+
+
 void nextevent(lf_ui_state_t* ui) {
   lf_task_flush_all_tasks();
-  //mayberesize();
+
 
   for (uint32_t i = 0; i < ui->timers.size; i++) {
     if(!ui->timers.items[i].paused)
       lf_timer_tick(ui, &ui->timers.items[i], ui->delta_time, false);
   }
 
+  // Mark expired timers for deletion
   for (uint32_t i = 0; i < ui->timers.size; i++) {
     if (ui->timers.items[i].elapsed >= 
       ui->timers.items[i].duration && !ui->timers.items[i].paused) {
@@ -140,31 +149,37 @@ void nextevent(lf_ui_state_t* ui) {
     }
   }
 
-  s.fullrerender = true;
 
   float cur_time = lf_ui_core_get_elapsed_time();
   ui->delta_time = cur_time - ui->_last_time;
   ui->_last_time = cur_time;
 
+  lf_widget_t* animated = NULL;
+  if (lf_widget_animate(ui, ui->root, &animated)) {
+    if(animated->_changed_size) {
+      lf_widget_shape(ui, lf_widget_flag_for_layout(ui, animated));
+    }
+  }
+
+  bool rendered = lf_windowing_get_current_event() == LF_EVENT_WINDOW_REFRESH;
 
   lf_ui_core_shape_widgets_if_needed(ui, ui->root, false);
 
-  vec2s winsize = lf_win_get_size(ui->win);
-  lf_container_t area;
-
-  if(s.fullrerender) {
+    vec2s winsize = lf_win_get_size(ui->win);
+    if(s.fullrerender) {
+      for(int32_t i = 0; i < s.rows; i++) {
+        s.dirty[i] = true;
+      }
+    }
+    int32_t largest = 0, smallest = -1;
     for(int32_t i = 0; i < s.rows; i++) {
-      s.dirty[i] = 1;
+      if(s.dirty[i]) {
+        if(smallest == -1) smallest = i;
+        if(i > largest) largest = i;
+      }
     }
-  }
-  int32_t largest = 0, smallest = -1;
-  for(int32_t i = 0; i < s.rows; i++) {
-    if(s.dirty[i]) {
-      if(smallest == -1) smallest = i;
-      if(i > largest) largest = i;
-    }
-  }
 
+    lf_container_t area;
     if(s.fullrerender) {
       area = LF_SCALE_CONTAINER(winsize.x, winsize.y);
       ui->render_clear_color_area(
@@ -172,14 +187,18 @@ void nextevent(lf_ui_state_t* ui) {
         area, winsize.y);
       ui->render_begin(ui->render_state);
       renderterminalrows();
-
       ui->render_end(ui->render_state);
       s.fullrerender = false;
-  lf_win_swap_buffers(ui->win);
     } else if (smallest != -1) {
-      uint32_t renderheight = (largest + 1 - smallest + 1) * s.font.font->line_h;
+      uint32_t renderheight = (largest - smallest + 1) * s.font.font->line_h;
       uint32_t renderstart = smallest * s.font.font->line_h;
-      area = (lf_container_t){
+    printf("Rendering from %i to %i.\n", renderstart, renderstart + renderheight);
+      for(int32_t i = smallest; i <= largest; i++) {
+        s.dirty[i] = 1;
+      }
+
+      ui->render_resize_display(ui, winsize.x, winsize.y);
+        area = (lf_container_t){
         .pos = (vec2s){.x = 0, .y = renderstart},
         .size = (vec2s){.x = winsize.x, .y = renderheight}
       };
@@ -190,9 +209,12 @@ void nextevent(lf_ui_state_t* ui) {
       ui->render_begin(ui->render_state);
       renderterminalrows();
       ui->render_end(ui->render_state);
-  lf_win_swap_buffers(ui->win);
     }
 
+    lf_win_swap_buffers(ui->win);
+  if (!rendered) {
+    ui->_idle_delay_func(ui);
+  }
 
   lf_windowing_update();
   // Remove expired timers
@@ -345,6 +367,7 @@ int main() {
   signal(SIGINT, siginthandler);
   memset(&s, 0, sizeof(s));
   s.cursorstate = CURSOR_STATE_NORMAL;
+  s.rowsunicode = NULL;
   s.pty = setuppty();
   setlocale(LC_CTYPE, "");
   if (!s.pty) return 1;
