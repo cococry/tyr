@@ -150,7 +150,7 @@ typedef struct {
   int32_t saved_scrolltop;
   int32_t saved_scrollbottom;
   int32_t saved_head;
-
+  int32_t last_cursor_row;
   int32_t* tabs;
 
   escape_seq_t csiseq;

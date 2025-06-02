@@ -165,53 +165,53 @@ void nextevent(lf_ui_state_t* ui) {
 
   lf_ui_core_shape_widgets_if_needed(ui, ui->root, false);
 
-    vec2s winsize = lf_win_get_size(ui->win);
-    if(s.fullrerender) {
-      for(int32_t i = 0; i < s.rows; i++) {
-        s.dirty[i] = true;
-      }
-    }
-    int32_t largest = 0, smallest = -1;
+  vec2s winsize = lf_win_get_size(ui->win);
+  if(s.fullrerender) {
     for(int32_t i = 0; i < s.rows; i++) {
-      if(s.dirty[i]) {
-        if(smallest == -1) smallest = i;
-        if(i > largest) largest = i;
-      }
+      s.dirty[i] = true;
     }
+  }
+  int32_t largest = 0, smallest = -1;
+  for(int32_t i = 0; i < s.rows; i++) {
+    if(s.dirty[i]) {
+      if(smallest == -1) smallest = i;
+      if(i > largest) largest = i;
+    }
+  }
 
-    lf_container_t area;
-    if(s.fullrerender) {
-      area = LF_SCALE_CONTAINER(winsize.x, winsize.y);
-      ui->render_clear_color_area(
-        ui->root->props.color, 
-        area, winsize.y);
-      ui->render_begin(ui->render_state);
-      renderterminalrows();
-      ui->render_end(ui->render_state);
-      s.fullrerender = false;
-    } else if (smallest != -1) {
-      uint32_t renderheight = (largest - smallest + 1) * s.font.font->line_h;
-      uint32_t renderstart = smallest * s.font.font->line_h;
+  lf_container_t area;
+  if(s.fullrerender) {
+    area = LF_SCALE_CONTAINER(winsize.x, winsize.y);
+    ui->render_clear_color_area(
+      ui->root->props.color, 
+      area, winsize.y);
+    ui->render_begin(ui->render_state);
+    renderterminalrows();
+    ui->render_end(ui->render_state);
+    s.fullrerender = false;
+  } else if (smallest != -1) {
+    if(smallest > s.last_cursor_row)
+      smallest = s.last_cursor_row;
+    uint32_t renderheight = (largest - smallest + 1) * s.font.font->line_h;
+    uint32_t renderstart = smallest * s.font.font->line_h;
     printf("Rendering from %i to %i.\n", renderstart, renderstart + renderheight);
-      for(int32_t i = smallest; i <= largest; i++) {
-        s.dirty[i] = 1;
-      }
-
-      ui->render_resize_display(ui, winsize.x, winsize.y);
-        area = (lf_container_t){
-        .pos = (vec2s){.x = 0, .y = renderstart},
-        .size = (vec2s){.x = winsize.x, .y = renderheight}
-      };
-
-      ui->render_clear_color_area(
-        ui->root->props.color, 
-        area, winsize.y);
-      ui->render_begin(ui->render_state);
-      renderterminalrows();
-      ui->render_end(ui->render_state);
+    for(int32_t i = smallest; i <= largest; i++) {
+      s.dirty[i] = 1;
     }
+    area = (lf_container_t){
+      .pos = (vec2s){.x = 0, .y = renderstart},
+      .size = (vec2s){.x = winsize.x, .y = renderheight}
+    };
 
-    lf_win_swap_buffers(ui->win);
+    ui->render_clear_color_area(
+      ui->root->props.color, 
+      area, winsize.y);
+    ui->render_begin(ui->render_state);
+    renderterminalrows();
+    ui->render_end(ui->render_state);
+  }
+
+  lf_win_swap_buffers(ui->win);
   if (!rendered) {
     ui->_idle_delay_func(ui);
   }
@@ -269,10 +269,10 @@ void mainloop(void) {
 
       // Only render for meaningful X events
       if (e == LF_EVENT_KEY_PRESS ||
-          e == LF_EVENT_TYPING_CHAR ||
-          e == LF_EVENT_WINDOW_REFRESH ||
-          e == LF_EVENT_WINDOW_CLOSE ||
-          e == LF_EVENT_WINDOW_RESIZE) {
+        e == LF_EVENT_TYPING_CHAR ||
+        e == LF_EVENT_WINDOW_REFRESH ||
+        e == LF_EVENT_WINDOW_CLOSE ||
+        e == LF_EVENT_WINDOW_RESIZE) {
         should_render = true;
       }
     }
@@ -286,7 +286,7 @@ void mainloop(void) {
 }
 
 typedef GLXContext (*glXCreateContextAttribsARBProc)(
-    Display*, GLXFBConfig, GLXContext, Bool, const int*);
+  Display*, GLXFBConfig, GLXContext, Bool, const int*);
 
 Window createxwin(uint32_t w, uint32_t h) {
   static int fbAttribs[] = {
@@ -331,8 +331,8 @@ Window createxwin(uint32_t w, uint32_t h) {
 
   // Get modern GL context creation function
   glXCreateContextAttribsARBProc glXCreateContextAttribsARB =
-      (glXCreateContextAttribsARBProc)
-      glXGetProcAddressARB((const GLubyte *)"glXCreateContextAttribsARB");
+    (glXCreateContextAttribsARBProc)
+    glXGetProcAddressARB((const GLubyte *)"glXCreateContextAttribsARB");
 
   if (!glXCreateContextAttribsARB) {
     fprintf(stderr, "glXCreateContextAttribsARB not supported\n");
@@ -354,7 +354,7 @@ Window createxwin(uint32_t w, uint32_t h) {
 
   XFree(vi);
   XFree(fbc);
-  
+
   glXMakeCurrent(lf_win_get_x11_display(), win, ctx);
 
   lf_win_register(win, ctx, 0);

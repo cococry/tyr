@@ -133,7 +133,7 @@ text_props_t rendertextranged(
         FT_Face face = s.font.font->face;
         int line_height = face->size->metrics.height >> 6;
         int x_advance = face->size->metrics.max_advance >> 6;
-        printf("%i\n", rowidx);
+        s.last_cursor_row = rowidx;
         rn_rect_render(
           state, 
           (vec2s){
