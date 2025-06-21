@@ -1,3 +1,5 @@
+
+#include "../vendor/reif/vendor/runara/vendor/glad/include/glad/glad.h"
 #include <GL/glx.h>
 #include <GLFW/glfw3.h>
 #include <leif/color.h>
@@ -24,10 +26,39 @@
 #include "term.h"
 #include "pty.h"
 
+
+GLuint fboTex;
+uint32_t fboid;
+GLuint fboRbo;
+RnState* fbostate;
+
 state_t s;
 
 static void resizeterm(int32_t w, int32_t h, int32_t cw, int32_t ch);
 
+void renderframebuffer(
+  RnState* state, 
+  uint32_t texid,
+  uint32_t width,
+  uint32_t height,
+  RnColor color,
+  RnColor border_color,
+  float border_width, 
+  float corner_radius) {
+
+  vec2s texcoords[4] = { 
+    (vec2s){.x = 0.0f, .y = 1.0f}, 
+    (vec2s){.x = 1.0f, .y = 1.0f}, 
+    (vec2s){.x = 1.0f, .y = 0.0f}, 
+    (vec2s){.x = 0.0f, .y = 0.0f}, 
+  };
+  rn_image_render_adv(state, (vec2s){.x = 0, .y = 0}, 0.0f, 
+                      color, 
+                      (RnTexture){.id = texid, .width = 
+                      width, .height = height}, texcoords, false,
+                      border_color, border_width,
+                      corner_radius);
+}
 void cleanup() {
   if (!s.pty) return;
   kill(s.pty->childpid, SIGTERM);
@@ -48,23 +79,81 @@ void siginthandler(int sig) {
 
 void charcb(lf_ui_state_t* ui, lf_window_t win, char* utf8, uint32_t utf8len) {
   (void)ui; (void)win;
-  if(
-    strcmp(utf8, "\n") == 0 || 
-    strcmp(utf8, "\r") == 0  
-  ) return;
+  if ((utf8len == 1) && 
+     (utf8[0] == '\n' || utf8[0] == '\r' || utf8[0] == '\b' || utf8[0] == 0x7f)) {
+    return; // handled elsewhere
+  }
   termwrite(utf8, utf8len, false);
 }
 
 void keycb(lf_ui_state_t* ui, lf_window_t win, int32_t key, int32_t scancode, int32_t action, int32_t mods) {
   (void)ui; (void)win; (void)scancode; (void)mods;
   if (action != LF_KEY_ACTION_PRESS) return;
-  if (key == KeyEnter) {
-    char cr = '\r';
-    termwrite(&cr, 1, false);
+  bool appmode = lf_flag_exists(&s.termmode, TERM_MODE_CURSOR_KEYS);
+  switch (key) {
+    case KeyEnter: {
+      char cr = '\r';
+      termwrite(&cr, 1, false);
+      break;
+    }
+    case KeyTab: {
+      termwrite("\t", 1, false);
+      break;
+    }
+    case KeyBackspace: {
+      if (appmode) {
+        char bs_app[2] = { '\033', 0x7f };  // ESC + DEL
+        termwrite(bs_app, 2, true);
+      } else {
+        char del = 0x7f; // ASCII DEL
+        termwrite(&del, 1, false);
+      }
+      break;
+    }
+    case KeyLeft: {
+      termwrite(appmode ? "\033OD" : "\033[D", 3, true);
+      break;
+    }
+    case KeyRight: {
+      termwrite(appmode ? "\033OC" : "\033[C", 3, true);
+      break;
+    }
+    case KeyUp: {
+      termwrite(appmode ? "\033OA" : "\033[A", 3, true);
+      break;
+    }
+    case KeyDown: {
+      termwrite(appmode ? "\033OB" : "\033[B", 3, true);
+      break;
+    }
+    case KeyHome: {
+      termwrite(appmode ? "\033OH" : "\033[H", 3, true);
+      break;
+    }
+    case KeyEnd: {
+      termwrite(appmode ? "\033OF" : "\033[F", 3, true);
+      break;
+    }
+    case KeyInsert: {
+      termwrite("\033[2~", 5, true);
+      break;
+    }
+    case KeyDelete: {
+      termwrite("\033[3~", 5, true);
+      break;
+    }
+    case KeyPageUp: {
+      termwrite("\033[5~", 5, true);
+      break;
+    }
+    case KeyPageDown: {
+      termwrite("\033[6~", 5, true);
+      break;
+    }
+    default:
+      break;
   }
 }
-
-
 void resizecb(lf_ui_state_t* ui, lf_window_t win, uint32_t w, uint32_t h) {
   (void)win;
   ui->render_resize_display(ui->render_state, h, w);
@@ -90,7 +179,9 @@ cell_t* reallocbuf(cell_t* old, int old_w, int old_h, int new_w, int new_h) {
   for (int r = 0; r < new_h; ++r) {
     for (int c = 0; c < new_w; ++c) {
       size_t idx = r * new_w + c;
-      new[idx] = (r < old_h && c < old_w) ? old[r * old_w + c] : (cell_t){ .codepoint = ' ' };
+      new[idx] = (r < old_h && c < old_w) ? old[r * old_w + c] : (cell_t){ .codepoint = ' ',
+      .attr = (term_attr_t){
+          .fg = CLR_WHITE, .bg = CLR_BLACK}};
     }
   }
   free(old);
@@ -120,15 +211,24 @@ void resizeterm(int32_t w, int32_t h, int32_t cw, int32_t ch) {
   s.rowsunicode = malloc(sizeof(char*) * s.rows);
   for (int32_t i = 0; i < s.rows; i++) 
     s.rowsunicode[i] = malloc((s.cols * 4) + 1);
-  handlealtcursor(CURSOR_ACTION_STORE);
-  handlealtcursor(CURSOR_ACTION_RESTORE);
-  s.dirty = realloc(s.dirty, new_rows * sizeof(uint8_t));
+  if(!s.dirty) {
+    s.dirty = malloc(sizeof(uint8_t) * new_rows);
+  } else { 
+    s.dirty = realloc(s.dirty, new_rows * sizeof(uint8_t));
+  }
   sendwinsize(s.pty->masterfd, s.rows, s.cols, w, h);
 
   s.rowsunicode = realloc(s.rowsunicode, sizeof(char*) * s.rows);
   for(int32_t i = 0; i < s.rows; i++) {
     s.rowsunicode[i] = realloc(s.rowsunicode[i], (s.cols * 4) + 1);
   }
+  glBindTexture(GL_TEXTURE_2D, fboTex);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+  glBindRenderbuffer(GL_RENDERBUFFER, fboRbo);
+  glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, w, h);
+  
+  handlealtcursor(CURSOR_ACTION_STORE);
+  handlealtcursor(CURSOR_ACTION_RESTORE);
 }
 
 
@@ -182,6 +282,8 @@ void nextevent(lf_ui_state_t* ui) {
   lf_container_t area;
   if(s.fullrerender) {
     area = LF_SCALE_CONTAINER(winsize.x, winsize.y);
+    glBindFramebuffer(GL_FRAMEBUFFER, fboid);
+    glViewport(0, 0, winsize.x, winsize.y);  // wichtig!
     ui->render_clear_color_area(
       ui->root->props.color, 
       area, winsize.y);
@@ -192,9 +294,8 @@ void nextevent(lf_ui_state_t* ui) {
   } else if (smallest != -1) {
     if(smallest > s.last_cursor_row)
       smallest = s.last_cursor_row;
-    uint32_t renderheight = (largest - smallest + 1) * s.font.font->line_h;
-    uint32_t renderstart = smallest * s.font.font->line_h;
-    printf("Rendering from %i to %i.\n", renderstart, renderstart + renderheight);
+    float renderheight = (largest - smallest + 1) * (float)s.font.font->line_h;
+    float renderstart = smallest * (float)s.font.font->line_h;
     for(int32_t i = smallest; i <= largest; i++) {
       s.dirty[i] = 1;
     }
@@ -202,6 +303,8 @@ void nextevent(lf_ui_state_t* ui) {
       .pos = (vec2s){.x = 0, .y = renderstart},
       .size = (vec2s){.x = winsize.x, .y = renderheight}
     };
+    glBindFramebuffer(GL_FRAMEBUFFER, fboid);
+    glViewport(0, 0, winsize.x, winsize.y);  
 
     ui->render_clear_color_area(
       ui->root->props.color, 
@@ -210,6 +313,16 @@ void nextevent(lf_ui_state_t* ui) {
     renderterminalrows();
     ui->render_end(ui->render_state);
   }
+
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  glViewport(0, 0, winsize.x, winsize.y);
+  rn_begin(fbostate);
+  renderframebuffer(fbostate,
+                    fboTex,
+                    winsize.x, winsize.y,
+                    RN_WHITE, RN_NO_COLOR, 0.0f, 0.0f
+                    );
+  rn_end(fbostate);
 
   lf_win_swap_buffers(ui->win);
   if (!rendered) {
@@ -395,6 +508,30 @@ int main() {
   s.fontadvance = 0;
   s.ui->root->props.color = (lf_color_t){0, 0, 0, 255};
   s.ui->root->container = (lf_container_t){ .pos = {.x = 0, .y = 0}, .size = {.x = 1280, .y = 720} };
+
+  fbostate = rn_init(1280, 720, (RnGLLoader)glXGetProcAddressARB);
+  glGenFramebuffers(1, &fboid);
+  glBindFramebuffer(GL_FRAMEBUFFER, fboid);
+
+  // Texture zum Schreiben ins FBO
+  glGenTextures(1, &fboTex);
+  glBindTexture(GL_TEXTURE_2D, fboTex);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1280, 720, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fboTex, 0);
+
+// Optional: Depth/Stencil Attachment
+glGenRenderbuffers(1, &fboRbo);
+glBindRenderbuffer(GL_RENDERBUFFER, fboRbo);
+glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 1280, 720);
+glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, fboRbo);
+
+if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+    fprintf(stderr, "FBO incomplete!\n");
+
+glBindFramebuffer(GL_FRAMEBUFFER, 0); // zurück zur Default
 
   mainloop();
   return 0;

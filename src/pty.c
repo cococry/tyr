@@ -29,16 +29,6 @@ pty_data_t* setuppty(void) {
     return NULL;
   }
 
-  data->buf = malloc(BUF_SIZE);
-  if (!data->buf) {
-    perror("malloc");
-    free(data);
-    return NULL;
-  }
-  memset(data->buf, 0, BUF_SIZE);
-  data->buflen = 0;
-
-
   data->childpid = forkpty(&data->masterfd, NULL, NULL, NULL);
   if (data->childpid == -1) {
     perror("forkpty");
@@ -66,8 +56,6 @@ pty_data_t* setuppty(void) {
     return NULL;
   }
 
-
-  // Parent process: return the pty data
   return data;
 }
 
@@ -178,7 +166,7 @@ void termwrite(const char* buf, size_t len, bool mayecho) {
   while (len > 0) {
     if (*buf == '\r') {
       // If the current character is a carriage return, output CRLF
-      writetopty("\r\n", 1); // normally \r\n but this is not working so lets just do that
+      writetopty("\r\n", 2); // normally \r\n but this is not working so lets just do that
       buf++;
       len--;
     } else {

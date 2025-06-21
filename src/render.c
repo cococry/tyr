@@ -1,6 +1,7 @@
 #include <freetype/freetype.h>
 #include <leif/asset_manager.h>
 #include <leif/task.h>
+#include <leif/util.h>
 #include <pthread.h>
 #include <runara/runara.h>
 #include <leif/leif.h>
@@ -9,10 +10,12 @@
 
 #include "tyr.h"
 #include "term.h"
+#include "render.h"
 
 #define STB_DS_IMPLEMENTATION
 #include "../vendor/stb_ds.h"
 
+static RnColor getrendercolor(term_color_16_t color, term_attr_t attr, bool fg);
 typedef struct {
   uint32_t begin, end;
   lf_mapped_font_t font;
@@ -128,23 +131,49 @@ text_props_t rendertextranged(
     };
     float offset = (pos.y + (hb_text->highest_bearing - glyph.bearing_y)) - pos.y;
     charx++;
-    if(render) {
-      if(charx == s.cursor.x && rowidx == s.cursor.y) {
         FT_Face face = s.font.font->face;
-        int line_height = face->size->metrics.height >> 6;
-        int x_advance = face->size->metrics.max_advance >> 6;
+        float line_height = face->size->metrics.height / 64.0f;
+        float cw = face->size->metrics.max_advance / 64.0f;
+    if(render) {
+      bool oncursor = charx == s.cursor.x && rowidx == s.cursor.y;
+      if(oncursor && !lf_flag_exists(&s.termmode, TERM_MODE_HIDE_CURSOR)) {
         s.last_cursor_row = rowidx;
+        float glyphw = glyph.width == 0 ? cw : glyph.width;
+        if(s.cells[rowidx * s.cols + charx + 1].codepoint == ' ') {
+          glyphw = cw;
+        }
         rn_rect_render(
           state, 
           (vec2s){
-            .x = glyph_pos.x + glyph.bearing_x + x_advance, 
+            .x = glyph_pos.x + glyph.bearing_x + cw, 
             .y = rowidx * s.font.font->line_h }, 
           (vec2s)
             {
-              .x = x_advance, .y = line_height }, 
-          RN_WHITE);
+              .x = glyphw, .y = line_height },
+          getrendercolor(s.cells[rowidx * s.cols + charx].attr.fg, 
+                         s.cells[rowidx * s.cols + charx].attr,
+                         true
+                         ));
+
       }
-      rn_glyph_render(state, glyph, *font, glyph_pos, color);
+      term_color_16_t charclr = s.cells[rowidx * s.cols + charx - 1].attr.fg;
+      if(charx == s.cursor.x + 1&& rowidx == s.cursor.y &&  !lf_flag_exists(&s.termmode, TERM_MODE_HIDE_CURSOR)) {
+        charclr = s.cells[rowidx * s.cols + charx].attr.bg;
+      }
+      if(s.cells[rowidx * s.cols + charx - 1].attr.bg != CLR_BLACK) {
+      rn_rect_render(state, 
+                     (vec2s){.x = (charx - 1) * cw, .y = rowidx * s.font.font->line_h},
+                     (vec2s){.x = cw, .y = s.font.font->line_h},
+                     getrendercolor(s.cells[rowidx * s.cols + charx - 1].attr.bg,
+                                    s.cells[rowidx * s.cols + charx - 1].attr,
+                                    false
+                                    ));
+      }
+      rn_glyph_render(state, glyph, *font, glyph_pos, 
+                      getrendercolor(charclr, 
+                                     s.cells[rowidx * s.cols + charx - 1].attr,
+                                     true
+                                     ));
     }
 
     if (glyph.glyph_top + offset > max_top) {
@@ -155,7 +184,7 @@ text_props_t rendertextranged(
     }
 
     // Advance to the next glyph
-    pos.x += (font->selected_strike_size != 0 ?  x_advance / 2 : x_advance); 
+    pos.x += (font->selected_strike_size != 0 ?  cw / 2 : cw); 
 
     w += s.fontadvance;
   }
@@ -328,4 +357,29 @@ enquerender() {
   task_data_t* task_data = malloc(sizeof(task_data_t));
   task_data->ui = s.ui;
   lf_task_enqueue(taskrender, task_data);
+}
+
+RnColor getrendercolor(term_color_16_t color, term_attr_t attr, bool fg) {
+
+  switch (color) {
+    case CLR_BLACK:           return (RnColor){ 0,   0,   0,   255 };
+    case CLR_RED:             return (RnColor){ 205, 0,   0,   255 };
+    case CLR_GREEN:           return (RnColor){ 0,   205, 0,   255 };
+    case CLR_YELLOW:          return (RnColor){ 205, 205, 0,   255 };
+    case CLR_BLUE:            return (RnColor){ 0,   0,   238, 255 };
+    case CLR_MAGENTA:         return (RnColor){ 205, 0,   205, 255 };
+    case CLR_CYAN:            return (RnColor){ 0,   205, 205, 255 };
+    case CLR_WHITE:           return (RnColor){ 229, 229, 229, 255 };
+
+    case CLR_BRIGHT_BLACK:    return (RnColor){ 127, 127, 127, 255 };
+    case CLR_BRIGHT_RED:      return (RnColor){ 255, 0,   0,   255 };
+    case CLR_BRIGHT_GREEN:    return (RnColor){ 0,   255, 0,   255 };
+    case CLR_BRIGHT_YELLOW:   return (RnColor){ 255, 255, 0,   255 };
+    case CLR_BRIGHT_BLUE:     return (RnColor){ 92,  92,  255, 255 };
+    case CLR_BRIGHT_MAGENTA:  return (RnColor){ 255, 0,   255, 255 };
+    case CLR_BRIGHT_CYAN:     return (RnColor){ 0,   255, 255, 255 };
+    case CLR_BRIGHT_WHITE:    return (RnColor){ 255, 255, 255, 255 };
+
+    default:                  return (RnColor){ 0, 0, 0, 255 }; // fallback: black
+  }
 }

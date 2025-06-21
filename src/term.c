@@ -1,4 +1,6 @@
 #include "term.h"
+#include "tyr.h"
+#include <leif/util.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #define __USE_XOPEN
@@ -8,6 +10,25 @@
 #include "pty.h"
 #include "render.h"
 
+static term_attr_t cur_attr = {
+  .fg = CLR_WHITE,
+  .bg = CLR_BLACK,
+  .bold = false,
+  .underline = false,
+  .inverse = false,
+  .faint = false,
+  .bg_r = -1,
+  .bg_g = -1,
+  .bg_b = -1,
+  .fg_r = -1,
+  .fg_g = -1,
+  .fg_b = -1,
+};
+
+void clearcell(cell_t* cell) {
+  cell->codepoint = ' ';
+  cell->attr = (term_attr_t){.fg = CLR_WHITE, .bg = CLR_BLACK, .bg_r = -1, .fg_r = -1};
+}
 
 const uint32_t dec_special_graphics[128]= {
     // Note: Only 0x20–0x7E are valid remappings in Special Graphics Mode.
@@ -209,7 +230,13 @@ cell_t* cellat(int32_t x, int32_t y) {
   return &s.cells[physrow * s.cols + x];
 }
 void setcell(int32_t x, int32_t y, uint32_t codepoint) {
-  s.cells[y * s.cols + x].codepoint = codepoint;
+  cell_t* cell = &s.cells[y * s.cols + x];
+  cell->codepoint = codepoint;
+  cell->attr = cur_attr;
+  cell->attr.fg = cur_attr.inverse ? cur_attr.bg : cur_attr.fg;
+  cell->attr.bg = cur_attr.inverse ? cur_attr.fg : cur_attr.bg;
+  cell->attr.bold = cur_attr.bold;
+  cell->attr.underline = cur_attr.underline;
   setdirty(y,true);
 }
 
@@ -232,8 +259,9 @@ void moveto(int32_t x, int32_t y) {
   s.cursor.x = CLAMP(x, 0, s.cols - 1);
   s.cursor.y = CLAMP(y, miny, maxy);
   lf_flag_unset(&s.cursorstate, CURSOR_STATE_ONWRAP);
-  if(y > s.rows - 1)
+  if(y <= s.rows - 1) {
     setdirty(y, true);
+  }
 }
 
 void handlealtcursor(cursor_action_t action) {
@@ -252,9 +280,11 @@ void handlealtcursor(cursor_action_t action) {
 }
 
 void toggleflag(bool set, uint32_t* flags, uint32_t flag) {
-  //if(!lf_flag_exists(flags, flag)) return;
-  if(set) lf_flag_set(flags, flag);
-  else lf_flag_unset(flags, flag);
+  if(set) {
+    lf_flag_set(flags, flag);
+  } else {
+    lf_flag_unset(flags, flag);
+  }
 }
 
 void movetodecom(int32_t x, int32_t y) {
@@ -283,7 +313,7 @@ deletecells(int32_t ncells) {
   setdirty(s.cursor.y, true);
   // clear the trailing garbage characters after the move
   for(int32_t x = s.cols - ncells; x < s.cols; x++) {
-    cursorrow[x].codepoint = ' ';
+    clearcell(&cursorrow[x]);
   }
 }
 
@@ -308,7 +338,7 @@ void insertblankchars(int32_t nchars) {
 
   // Insert blank cells
   for (int32_t x = src; x < dest; x++) {
-    cursorrow[x].codepoint = ' ';
+    clearcell(&cursorrow[x]);
   }
 }
 
@@ -328,7 +358,7 @@ void scrollup(int32_t start, int32_t scrolls) {
   for (int32_t i = s.scrollbottom - scrolls + 1; i <= s.scrollbottom; i++) {
     cell_t* row = getphysrow(i);
     for (int32_t x = 0; x < s.cols; x++) {
-      row[x].codepoint = ' ';
+    clearcell(&row[x]);
     }
   }
 }
@@ -349,7 +379,7 @@ void scrolldown(int32_t start, int32_t scrolls) {
   for (int32_t i = start; i < start + scrolls; i++) {
     cell_t* row = getphysrow(i);
     for (int32_t x = 0; x < s.cols; x++) {
-      row[x].codepoint = ' ';
+      clearcell(&row[x]);
     }
   }
 }
@@ -441,7 +471,7 @@ void settermmode(
             for (int32_t y = 0; y < s.rows; y++) {
               setdirty(y, true);
               for (int32_t x = 0; x < s.cols; x++) {
-                cellat(x, y)->codepoint = ' ';
+                clearcell(cellat(x,y));
               }
             }
           }
@@ -599,10 +629,96 @@ void parsecsi(void) {
     s.csiseq.cmd[1] = s.csiseq.buf[i + 1];
 }
 
+void applysgr(const int* params, int count, term_attr_t* attr) {
+  int i = 0;
+  if (count == 0) { // No params = reset
+    *attr = (term_attr_t){ .fg = CLR_WHITE, .bg = CLR_BLACK, 
+        .fg_r = -1, 
+        .bg_r = -1, 
+    };
+    return;
+  }
+
+  attr->fg_r = -1;
+  attr->fg_g = -1;
+  attr->fg_b = -1;
+  attr->bg_r = -1;
+  attr->bg_g = -1;
+  attr->bg_b = -1;
+
+  while (i < count) {
+    int p = params[i++];
+    switch (p) {
+      case 0:
+        *attr = (term_attr_t){ .fg = CLR_WHITE, .bg = CLR_BLACK,
+        .fg_r = -1, 
+        .bg_r = -1, 
+        };
+        printf("Resetting at: %c\n", s.cells[s.cursor.y * s.cols + s.cursor.x - 1].codepoint);
+        break;
+      case 1: attr->bold = true; break;
+      case 2: attr->faint = true; break;
+      case 4: attr->underline = true; break;
+      case 7: attr->inverse = true; break;
+      case 21: case 22: attr->bold = false; attr->faint = false; break;
+      case 24: attr->underline = false; break;
+      case 27: attr->inverse = false; break;
+      case 39: attr->fg = CLR_WHITE; break;
+      case 49: attr->bg = CLR_BLACK; break;
+
+      case 30 ... 37:
+        attr->fg = (term_color_16_t)(p - 30);
+        break;
+      case 90 ... 97:
+        attr->fg = (term_color_16_t)(CLR_BRIGHT_BLACK + (p - 90));
+        break;
+      case 40 ... 47:
+        attr->bg = (term_color_16_t)(p - 40);
+        break;
+      case 100 ... 107:
+        attr->bg = (term_color_16_t)(CLR_BRIGHT_BLACK + (p - 100));
+        break;
+
+      case 38: case 48: {
+        if (i + 1 >= count) break;
+        int mode = params[i++];
+        if (mode == 5 && i < count) { // 256 color
+          int color = params[i++];
+          if (p == 38)
+            attr->fg = (term_color_16_t)(color & 0xFF); // map separately if > 15
+          else
+            attr->bg = (term_color_16_t)(color & 0xFF);
+        } else if (mode == 2 && i + 2 < count) { // truecolor
+          uint8_t r = params[i++];
+        uint8_t g = params[i++];
+        uint8_t b = params[i++];
+        if (p == 38) {
+          attr->fg_r = r; 
+          attr->fg_g = g; 
+          attr->fg_b = b; 
+          printf("RGB FG: %i, %i, %i\n", r, g, b);
+          } else {
+          attr->bg_r = r; 
+          attr->bg_g = g; 
+          attr->bg_b = b;
+          printf("RGB BG: %i, %i, %i\n", r, g, b);
+        }
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+}
 void  
 handlecsi(void) {
   uint32_t dp = s.csiseq.nparams > 0 ? s.csiseq.params[0] : 1;
   switch(s.csiseq.cmd[0]) {
+    case 'm': {
+      applysgr(s.csiseq.params, s.csiseq.nparams, &cur_attr);
+      break;
+    }
     case 'b': {
       // print most recent character n times 
       uint32_t n = MIN(dp, SHRT_MAX);
@@ -682,17 +798,17 @@ handlecsi(void) {
       if(op == 0) {
         // clear line right of cursor
         for(int32_t x = s.cursor.x; x < s.cols; x++) {
-          cellat(x, s.cursor.y)->codepoint = ' ';
+          clearcell(cellat(x,s.cursor.y));
         }
       } else if(op == 1) {
         // clear line left of cursor
         for(int32_t x = 0; x < s.cursor.x; x++) {
-          cellat(x, s.cursor.y)->codepoint = ' ';
+          clearcell(cellat(x,s.cursor.y));
         }
       } else if(op == 2) {
         // entire line 
         for(int32_t x = 0; x < s.cols; x++) {
-          cellat(x, s.cursor.y)->codepoint = ' ';
+          clearcell(cellat(x,s.cursor.y));
         }
       }
       break;
@@ -703,13 +819,13 @@ handlecsi(void) {
       if(op == 0) {
         // From cursor to end of screen
         for(int32_t x = s.cursor.x; x < s.cols; x++) {
-          cellat(x, s.cursor.y)->codepoint = ' ';
+          clearcell(cellat(x,s.cursor.y));
         }
         if(s.cursor.y >= s.rows - 1) break;
         for(int32_t y = s.cursor.y + 1; y < s.rows; y++) {
           setdirty(y, true);
           for(int32_t x = 0; x < s.cols; x++) {
-            cellat(x, y)->codepoint = ' ';
+            clearcell(cellat(x,y));
           }
         }
       } else if(op == 1) {
@@ -718,21 +834,21 @@ handlecsi(void) {
           for(int32_t y = 0; y < s.cursor.y - 1; y++) {
             setdirty(y, true);
             for(int32_t x = 0; x < s.cols; x++) {
-              cellat(x, y)->codepoint = ' ';
+              clearcell(cellat(x,y));
             }
           }
         }
 
         setdirty(s.cursor.y, true);
         for(int32_t x = 0; x < s.cursor.x; x++) {
-          cellat(x, s.cursor.y)->codepoint = ' ';
+          clearcell(cellat(x,s.cursor.y));
         }
       } else if (op == 2) {
         // Entire screen
         for(int32_t y = 0; y < s.rows; y++) {
           setdirty(y, true);
           for(int32_t x = 0; x < s.cols; x++) {
-            cellat(x, y)->codepoint = ' ';
+            clearcell(cellat(x,y));
           }
         }
       }
@@ -764,16 +880,16 @@ handlecsi(void) {
     case 'X':
       // clear n cells
       for(int32_t x = s.cursor.x; x < s.cursor.x + (int32_t)dp && x < s.cols; x++) {
-        cellat(x, s.cursor.y)->codepoint = ' ';
+        clearcell(cellat(x, s.cursor.y));
       }
       break;
     case 'h': 
       // Set terminal mode 
-      settermmode(s.csiseq.prefix == '?', true, s.csiseq.params, s.csiseq.nparams);
+      settermmode(s.csiseq.prefix == '?', false, s.csiseq.params, s.csiseq.nparams);
       break;
     case 'l':
       // Reset terminal mode 
-      settermmode(s.csiseq.prefix == '?', false, s.csiseq.params, s.csiseq.nparams);
+      settermmode(s.csiseq.prefix == '?', true, s.csiseq.params, s.csiseq.nparams);
       break;
     case 'P':
       // delete n cells
@@ -818,6 +934,24 @@ handlecsi(void) {
           break; 
       }
       break;
+    case 't': {
+      int32_t op = s.csiseq.params[0];
+      if (op == 18) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "\033[8;%d;%dt", s.rows, s.cols);
+        termwrite(buf, strlen(buf), false);
+      } else if (op == 19) {
+        int32_t height_px = 1280;
+        int32_t width_px  = 720; 
+        char buf[64];
+        snprintf(buf, sizeof(buf), "\033[4;%d;%dt", height_px, width_px);
+        termwrite(buf, strlen(buf), false);
+      }
+      break;
+    } 
+    default: 
+      printf("tyr: unhandled CSI escape sequence code: %s\n", s.csiseq.cmd);
+      break;
   }
 }
 
@@ -839,6 +973,9 @@ handlectrl(uint32_t c) {
     case '\r':   
       moveto(0, s.cursor.y);
       return;
+    case 0x7f: // ASCII DEL
+      deletecells(1);
+      break;
     case 0x88:   
       s.tabs[s.cursor.x] = 1;
       break;
@@ -927,7 +1064,6 @@ void handlechar(uint32_t c) {
   }
 
   if (s.cursorstate & CURSOR_STATE_ONWRAP) {
-    printf("Moving cursor.\n");
     newline(true);
   }
 	
@@ -940,7 +1076,7 @@ void handlechar(uint32_t c) {
 
   if (s.charset == CHARSET_ALT && c >= 0x20 && c <= 0x7E && dec_special_graphics[c]) {
     c = dec_special_graphics[c];
-  }
+ }
 
   setcell(s.cursor.x, s.cursor.y, c);
   if (w == 2 && s.cursor.x + 1 < s.cols) {

@@ -95,9 +95,9 @@ typedef enum {
 } escape_state_t;
 
 typedef enum {
-  CURSOR_STATE_NORMAL   = 0,
-  CURSOR_STATE_ONWRAP   = 1,
-  CURSOR_STATE_ORIGIN   = 2
+  CURSOR_STATE_NORMAL   = 1,
+  CURSOR_STATE_ONWRAP   = 2,
+  CURSOR_STATE_ORIGIN   = 4
 } cursor_state_t;
 
 typedef enum {
@@ -130,11 +130,19 @@ typedef enum {
   CHARSET_ALT   = 1, // DEC Special Graphics
 } charset_mode_t;
 
-
 typedef struct {
-  term_color_16_t bg, fg;
+  term_color_16_t fg;
+  term_color_16_t bg;
+  bool bold;
+  bool underline;
+  bool inverse;
+  bool faint;
+  int32_t fg_r, fg_g, fg_b;
+  int32_t bg_r, bg_g, bg_b;
+} term_attr_t;
+typedef struct {
+  term_attr_t attr;
   uint32_t codepoint;
-  term_font_style_t font_style;
   bool dirty;
 } cell_t;
 
