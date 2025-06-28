@@ -27,7 +27,14 @@ static term_attr_t cur_attr = {
 
 void clearcell(cell_t* cell) {
   cell->codepoint = ' ';
-  cell->attr = (term_attr_t){.fg = CLR_WHITE, .bg = CLR_BLACK, .bg_r = -1, .fg_r = -1};
+  cell->attr = (term_attr_t){.fg = CLR_WHITE, .bg = CLR_BLACK, 
+    .bg_r = -1, 
+    .bg_b = -1, 
+    .bg_g = -1, 
+    .fg_r = -1,
+    .fg_g = -1,
+    .fg_b = -1
+  };
 }
 
 const uint32_t dec_special_graphics[128]= {
@@ -629,32 +636,24 @@ void parsecsi(void) {
     s.csiseq.cmd[1] = s.csiseq.buf[i + 1];
 }
 
+
 void applysgr(const int* params, int count, term_attr_t* attr) {
   int i = 0;
-  if (count == 0) { // No params = reset
-    *attr = (term_attr_t){ .fg = CLR_WHITE, .bg = CLR_BLACK, 
-        .fg_r = -1, 
-        .bg_r = -1, 
-    };
+
+  if (count == 0) {
+    *attr = (term_attr_t){ .fg = CLR_WHITE, .bg = CLR_BLACK,
+      .fg_r = -1, .fg_g = -1, .fg_b = -1,
+      .bg_r = -1, .bg_g = -1, .bg_b = -1 };
     return;
   }
-
-  attr->fg_r = -1;
-  attr->fg_g = -1;
-  attr->fg_b = -1;
-  attr->bg_r = -1;
-  attr->bg_g = -1;
-  attr->bg_b = -1;
 
   while (i < count) {
     int p = params[i++];
     switch (p) {
       case 0:
         *attr = (term_attr_t){ .fg = CLR_WHITE, .bg = CLR_BLACK,
-        .fg_r = -1, 
-        .bg_r = -1, 
-        };
-        printf("Resetting at: %c\n", s.cells[s.cursor.y * s.cols + s.cursor.x - 1].codepoint);
+          .fg_r = -1, .fg_g = -1, .fg_b = -1,
+          .bg_r = -1, .bg_g = -1, .bg_b = -1 };
         break;
       case 1: attr->bold = true; break;
       case 2: attr->faint = true; break;
@@ -663,54 +662,70 @@ void applysgr(const int* params, int count, term_attr_t* attr) {
       case 21: case 22: attr->bold = false; attr->faint = false; break;
       case 24: attr->underline = false; break;
       case 27: attr->inverse = false; break;
-      case 39: attr->fg = CLR_WHITE; break;
-      case 49: attr->bg = CLR_BLACK; break;
+      case 39:
+        attr->fg = CLR_WHITE;
+        attr->fg_r = attr->fg_g = attr->fg_b = -1;
+        break;
+      case 49:
+        attr->bg = CLR_BLACK;
+        attr->bg_r = attr->bg_g = attr->bg_b = -1;
+        break;
 
       case 30 ... 37:
         attr->fg = (term_color_16_t)(p - 30);
+        attr->fg_r = attr->fg_g = attr->fg_b = -1;
         break;
       case 90 ... 97:
         attr->fg = (term_color_16_t)(CLR_BRIGHT_BLACK + (p - 90));
+        attr->fg_r = attr->fg_g = attr->fg_b = -1;
         break;
       case 40 ... 47:
         attr->bg = (term_color_16_t)(p - 40);
+        attr->bg_r = attr->bg_g = attr->bg_b = -1;
         break;
       case 100 ... 107:
         attr->bg = (term_color_16_t)(CLR_BRIGHT_BLACK + (p - 100));
+        attr->bg_r = attr->bg_g = attr->bg_b = -1;
         break;
 
       case 38: case 48: {
-        if (i + 1 >= count) break;
+        if (i >= count) break;
         int mode = params[i++];
         if (mode == 5 && i < count) { // 256 color
           int color = params[i++];
-          if (p == 38)
-            attr->fg = (term_color_16_t)(color & 0xFF); // map separately if > 15
-          else
-            attr->bg = (term_color_16_t)(color & 0xFF);
-        } else if (mode == 2 && i + 2 < count) { // truecolor
-          uint8_t r = params[i++];
-        uint8_t g = params[i++];
-        uint8_t b = params[i++];
-        if (p == 38) {
-          attr->fg_r = r; 
-          attr->fg_g = g; 
-          attr->fg_b = b; 
-          printf("RGB FG: %i, %i, %i\n", r, g, b);
+          if (p == 38) {
+            attr->fg = (term_color_16_t)(color & 0xFF);
+            attr->fg_r = attr->fg_g = attr->fg_b = -1;
           } else {
-          attr->bg_r = r; 
-          attr->bg_g = g; 
-          attr->bg_b = b;
-          printf("RGB BG: %i, %i, %i\n", r, g, b);
-        }
+            attr->bg = (term_color_16_t)(color & 0xFF);
+            attr->bg_r = attr->bg_g = attr->bg_b = -1;
+          }
+        } else if (mode == 2 && i + 2 < count) { // truecolor (corrected RGB)
+          int r = params[i++];
+          int g = params[i++];
+          int b = params[i++];
+          if (p == 38) {
+            attr->fg_r = r;
+            attr->fg_g = g;
+            attr->fg_b = b;
+          } else {
+            attr->bg_r = r;
+            attr->bg_g = g;
+            attr->bg_b = b;
+          }
+        } else {
+          // skip any malformed or unsupported 38/48 sequences
+          break;
         }
         break;
       }
+
       default:
         break;
     }
   }
 }
+
 void  
 handlecsi(void) {
   uint32_t dp = s.csiseq.nparams > 0 ? s.csiseq.params[0] : 1;

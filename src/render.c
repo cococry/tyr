@@ -136,6 +136,7 @@ text_props_t rendertextranged(
         float cw = face->size->metrics.max_advance / 64.0f;
     if(render) {
       bool oncursor = charx == s.cursor.x && rowidx == s.cursor.y;
+
       if(oncursor && !lf_flag_exists(&s.termmode, TERM_MODE_HIDE_CURSOR)) {
         s.last_cursor_row = rowidx;
         float glyphw = glyph.width == 0 ? cw : glyph.width;
@@ -160,14 +161,18 @@ text_props_t rendertextranged(
       if(charx == s.cursor.x + 1&& rowidx == s.cursor.y &&  !lf_flag_exists(&s.termmode, TERM_MODE_HIDE_CURSOR)) {
         charclr = s.cells[rowidx * s.cols + charx].attr.bg;
       }
-      if(s.cells[rowidx * s.cols + charx - 1].attr.bg != CLR_BLACK) {
-      rn_rect_render(state, 
-                     (vec2s){.x = (charx - 1) * cw, .y = rowidx * s.font.font->line_h},
-                     (vec2s){.x = cw, .y = s.font.font->line_h},
-                     getrendercolor(s.cells[rowidx * s.cols + charx - 1].attr.bg,
-                                    s.cells[rowidx * s.cols + charx - 1].attr,
-                                    false
-                                    ));
+
+      const term_attr_t* cellattr = &s.cells[rowidx * s.cols + charx - 1].attr;
+
+      bool has_bg = (cellattr->bg_r != -1) || (cellattr->bg != CLR_BLACK);
+
+      if (has_bg) {
+        rn_rect_render(state, 
+                       (vec2s){.x = (charx - 1) * cw, .y = rowidx * s.font.font->line_h},
+                       (vec2s){.x = cw, .y = s.font.font->line_h},
+                       getrendercolor(cellattr->bg,
+                                      *cellattr,
+                                      false));
       }
       rn_glyph_render(state, glyph, *font, glyph_pos, 
                       getrendercolor(charclr, 
@@ -359,8 +364,46 @@ enquerender() {
   lf_task_enqueue(taskrender, task_data);
 }
 
-RnColor getrendercolor(term_color_16_t color, term_attr_t attr, bool fg) {
+static RnColor colorfrom256palette(int idx) {
+  if(idx < 0 || idx > 255)
+    return (RnColor){0, 0, 0, 255}; // fallback
 
+  if(idx < 16) {
+    return getrendercolor((term_color_16_t)idx, (term_attr_t){0}, true);
+  }
+
+  if(idx >= 16 && idx <= 231) {
+    int c = idx - 16;
+    int r = (c / 36) % 6;
+    int g = (c / 6) % 6;
+    int b = c % 6;
+
+    return (RnColor){
+      .r = r == 0 ? 0 : 55 + r * 40,
+      .g = g == 0 ? 0 : 55 + g * 40,
+      .b = b == 0 ? 0 : 55 + b * 40,
+      .a = 255
+    };
+  }
+
+  // grayscale 232–255
+  int gray = 8 + (idx - 232) * 10;
+  return (RnColor){ gray, gray, gray, 255 };
+}
+
+RnColor getrendercolor(term_color_16_t color, term_attr_t attr, bool fg) {
+  if(fg && attr.fg_r != -1) {
+    return (RnColor){attr.fg_r, attr.fg_g, attr.fg_b, 255};
+  } else if(!fg && attr.bg_r != -1) {
+    return (RnColor){attr.bg_r, attr.bg_g, attr.bg_b, 255};
+  }
+
+  // handle 256-color indices
+  if(color >= 16 && color <= 255) {
+    return colorfrom256palette(color);
+  }
+
+  // fallback to ANSI base
   switch (color) {
     case CLR_BLACK:           return (RnColor){ 0,   0,   0,   255 };
     case CLR_RED:             return (RnColor){ 205, 0,   0,   255 };
@@ -380,6 +423,6 @@ RnColor getrendercolor(term_color_16_t color, term_attr_t attr, bool fg) {
     case CLR_BRIGHT_CYAN:     return (RnColor){ 0,   255, 255, 255 };
     case CLR_BRIGHT_WHITE:    return (RnColor){ 255, 255, 255, 255 };
 
-    default:                  return (RnColor){ 0, 0, 0, 255 }; // fallback: black
+    default:                  return (RnColor){ 0, 0, 0, 255 };
   }
 }

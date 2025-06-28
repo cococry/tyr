@@ -65,25 +65,24 @@ typedef enum {
   TERM_MODE_UTF8                      = 1 << 17,
 } termmode_t;
 
-typedef enum {
-  CLR_BLACK             = 0,
-  CLR_RED               = 1,
-  CLR_GREEN             = 2,
-  CLR_YELLOW            = 3,
-  CLR_BLUE              = 4,
-  CLR_MAGENTA           = 5,
-  CLR_CYAN              = 6,
-  CLR_WHITE             = 7,
-  CLR_BRIGHT_BLACK      = 8,
-  CLR_BRIGHT_RED        = 9,
-  CLR_BRIGHT_GREEN      = 10,
-  CLR_BRIGHT_YELLOW     = 11,
-  CLR_BRIGHT_BLUE       = 12,
-  CLR_BRIGHT_MAGENTA    = 13,
-  CLR_BRIGHT_CYAN       = 14,
-  CLR_BRIGHT_WHITE      = 15,
-} term_color_16_t;
+typedef uint16_t term_color_16_t;
+#define CLR_BLACK         0
+#define CLR_RED           1
+#define CLR_GREEN         2
+#define CLR_YELLOW        3
+#define CLR_BLUE          4
+#define CLR_MAGENTA       5
+#define CLR_CYAN          6
+#define CLR_WHITE         7
 
+#define CLR_BRIGHT_BLACK  8
+#define CLR_BRIGHT_RED    9
+#define CLR_BRIGHT_GREEN 10
+#define CLR_BRIGHT_YELLOW 11
+#define CLR_BRIGHT_BLUE  12
+#define CLR_BRIGHT_MAGENTA 13
+#define CLR_BRIGHT_CYAN  14
+#define CLR_BRIGHT_WHITE 15
 typedef enum {
   ESC_STATE_ON_ESC     = 1,
   ESC_STATE_CSI        = 2,

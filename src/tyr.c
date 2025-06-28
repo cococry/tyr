@@ -181,7 +181,8 @@ cell_t* reallocbuf(cell_t* old, int old_w, int old_h, int new_w, int new_h) {
       size_t idx = r * new_w + c;
       new[idx] = (r < old_h && c < old_w) ? old[r * old_w + c] : (cell_t){ .codepoint = ' ',
       .attr = (term_attr_t){
-          .fg = CLR_WHITE, .bg = CLR_BLACK}};
+          .fg = CLR_WHITE, .bg = CLR_BLACK,
+        .fg_r = -1, .bg_r = -1}};
     }
   }
   free(old);
@@ -283,7 +284,7 @@ void nextevent(lf_ui_state_t* ui) {
   if(s.fullrerender) {
     area = LF_SCALE_CONTAINER(winsize.x, winsize.y);
     glBindFramebuffer(GL_FRAMEBUFFER, fboid);
-    glViewport(0, 0, winsize.x, winsize.y);  // wichtig!
+    glViewport(0, 0, winsize.x, winsize.y);
     ui->render_clear_color_area(
       ui->root->props.color, 
       area, winsize.y);
@@ -493,7 +494,7 @@ int main() {
   lf_win_set_typing_char_cb(win, charcb);
   lf_win_set_key_cb(win, keycb);
   lf_win_set_resize_cb(win, resizecb);
-  s.font = lf_asset_manager_request_font(s.ui, "JetBrains Mono Nerd Font", LF_FONT_STYLE_REGULAR, 28);;
+  s.font = lf_asset_manager_request_font(s.ui, "JetBrains Mono Nerd Font", LF_FONT_STYLE_REGULAR, 20);
   FT_Face face = s.font.font->face;
   int line_height = face->size->metrics.height >> 6;
   int x_advance = face->size->metrics.max_advance >> 6;
@@ -513,7 +514,6 @@ int main() {
   glGenFramebuffers(1, &fboid);
   glBindFramebuffer(GL_FRAMEBUFFER, fboid);
 
-  // Texture zum Schreiben ins FBO
   glGenTextures(1, &fboTex);
   glBindTexture(GL_TEXTURE_2D, fboTex);
   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1280, 720, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
@@ -521,8 +521,6 @@ int main() {
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
 glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fboTex, 0);
-
-// Optional: Depth/Stencil Attachment
 glGenRenderbuffers(1, &fboRbo);
 glBindRenderbuffer(GL_RENDERBUFFER, fboRbo);
 glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 1280, 720);
@@ -531,7 +529,7 @@ glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDER
 if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
     fprintf(stderr, "FBO incomplete!\n");
 
-glBindFramebuffer(GL_FRAMEBUFFER, 0); // zurück zur Default
+glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
   mainloop();
   return 0;
