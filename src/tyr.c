@@ -27,15 +27,40 @@
 #include "pty.h"
 
 
-GLuint fboTex;
+GLuint fbotex;
 uint32_t fboid;
-GLuint fboRbo;
+GLuint fborbo;
 RnState* fbostate;
 
 state_t s;
 
 static void resizeterm(int32_t w, int32_t h, int32_t cw, int32_t ch);
 
+GLuint createframebuffer(int width, int height, GLuint* texture_out) {
+  if (*texture_out) glDeleteTextures(1, texture_out);
+  if (fboid) glDeleteFramebuffers(1, &fboid);
+
+  GLuint new_fbo, tex;
+  glGenFramebuffers(1, &new_fbo);
+  glBindFramebuffer(GL_FRAMEBUFFER, new_fbo);
+
+  glGenTextures(1, &tex);
+  glBindTexture(GL_TEXTURE_2D, tex);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0,
+               GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+
+  if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+    fprintf(stderr, "FBO creation failed\n");
+    return 0;
+  }
+
+  *texture_out = tex;
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  return new_fbo;
+}
 void renderframebuffer(
   RnState* state, 
   uint32_t texid,
@@ -156,6 +181,7 @@ void keycb(lf_ui_state_t* ui, lf_window_t win, int32_t key, int32_t scancode, in
 }
 void resizecb(lf_ui_state_t* ui, lf_window_t win, uint32_t w, uint32_t h) {
   (void)win;
+    fboid = createframebuffer(h,w, &fbotex);
   ui->render_resize_display(ui->render_state, h, w);
 
   FT_Face face = s.font.font->face; 
@@ -165,8 +191,9 @@ void resizecb(lf_ui_state_t* ui, lf_window_t win, uint32_t w, uint32_t h) {
   s.fullrerender = true;
   int32_t new_cols = h / x_advance;
   int32_t new_rows = w / line_height;
-  if(new_cols != s.cols || new_rows != s.rows)
+  if(new_cols != s.cols || new_rows != s.rows) {
     resizeterm(h, w, x_advance, line_height);
+  }
 }
 
 void sendwinsize(int fd, int rows, int cols, int pixelw, int pixelh) {
@@ -223,10 +250,6 @@ void resizeterm(int32_t w, int32_t h, int32_t cw, int32_t ch) {
   for(int32_t i = 0; i < s.rows; i++) {
     s.rowsunicode[i] = realloc(s.rowsunicode[i], (s.cols * 4) + 1);
   }
-  glBindTexture(GL_TEXTURE_2D, fboTex);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-  glBindRenderbuffer(GL_RENDERBUFFER, fboRbo);
-  glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, w, h);
   
   handlealtcursor(CURSOR_ACTION_STORE);
   handlealtcursor(CURSOR_ACTION_RESTORE);
@@ -282,13 +305,24 @@ void nextevent(lf_ui_state_t* ui) {
 
   lf_container_t area;
   if(s.fullrerender) {
-    area = LF_SCALE_CONTAINER(winsize.x, winsize.y);
+    smallest = 0;
+    largest = s.rows - 1;
+  float renderheight = (largest - smallest + 1) * (float)s.font.font->line_h;
+    float renderstart = smallest * (float)s.font.font->line_h;
+    for(int32_t i = smallest; i <= largest; i++) {
+      s.dirty[i] = 1;
+    }
+    area = (lf_container_t){
+      .pos = (vec2s){.x = 0, .y = renderstart},
+      .size = (vec2s){.x = winsize.x, .y = renderheight}
+    };
     glBindFramebuffer(GL_FRAMEBUFFER, fboid);
-    glViewport(0, 0, winsize.x, winsize.y);
+    glViewport(0, 0, winsize.x, winsize.y);  
     ui->render_clear_color_area(
       ui->root->props.color, 
       area, winsize.y);
     ui->render_begin(ui->render_state);
+    ui->render_resize_display(ui->render_state, winsize.x, winsize.y);
     renderterminalrows();
     ui->render_end(ui->render_state);
     s.fullrerender = false;
@@ -317,9 +351,11 @@ void nextevent(lf_ui_state_t* ui) {
 
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   glViewport(0, 0, winsize.x, winsize.y);
+  rn_clear_color((RnColor){ui->root->props.color.r, ui->root->props.color.g, ui->root->props.color.b, ui->root->props.color.a});
   rn_begin(fbostate);
+  rn_resize_display(fbostate, winsize.x, winsize.y);
   renderframebuffer(fbostate,
-                    fboTex,
+                    fbotex,
                     winsize.x, winsize.y,
                     RN_WHITE, RN_NO_COLOR, 0.0f, 0.0f
                     );
@@ -494,7 +530,7 @@ int main() {
   lf_win_set_typing_char_cb(win, charcb);
   lf_win_set_key_cb(win, keycb);
   lf_win_set_resize_cb(win, resizecb);
-  s.font = lf_asset_manager_request_font(s.ui, "JetBrains Mono Nerd Font", LF_FONT_STYLE_REGULAR, 20);
+  s.font = lf_asset_manager_request_font(s.ui, "JetBrains Mono Nerd Font", LF_FONT_STYLE_BOLD, 24);
   FT_Face face = s.font.font->face;
   int line_height = face->size->metrics.height >> 6;
   int x_advance = face->size->metrics.max_advance >> 6;
@@ -511,25 +547,8 @@ int main() {
   s.ui->root->container = (lf_container_t){ .pos = {.x = 0, .y = 0}, .size = {.x = 1280, .y = 720} };
 
   fbostate = rn_init(1280, 720, (RnGLLoader)glXGetProcAddressARB);
-  glGenFramebuffers(1, &fboid);
-  glBindFramebuffer(GL_FRAMEBUFFER, fboid);
 
-  glGenTextures(1, &fboTex);
-  glBindTexture(GL_TEXTURE_2D, fboTex);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1280, 720, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fboTex, 0);
-glGenRenderbuffers(1, &fboRbo);
-glBindRenderbuffer(GL_RENDERBUFFER, fboRbo);
-glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 1280, 720);
-glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, fboRbo);
-
-if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-    fprintf(stderr, "FBO incomplete!\n");
-
-glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  fboid = createframebuffer(1280, 720, &fbotex);
 
   mainloop();
   return 0;
