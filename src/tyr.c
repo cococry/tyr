@@ -181,7 +181,6 @@ void keycb(lf_ui_state_t* ui, lf_window_t win, int32_t key, int32_t scancode, in
 }
 void resizecb(lf_ui_state_t* ui, lf_window_t win, uint32_t w, uint32_t h) {
   (void)win;
-    fboid = createframebuffer(h,w, &fbotex);
   ui->render_resize_display(ui->render_state, h, w);
 
   FT_Face face = s.font.font->face; 
@@ -193,6 +192,7 @@ void resizecb(lf_ui_state_t* ui, lf_window_t win, uint32_t w, uint32_t h) {
   int32_t new_rows = w / line_height;
   if(new_cols != s.cols || new_rows != s.rows) {
     resizeterm(h, w, x_advance, line_height);
+    fboid = createframebuffer(h,w, &fbotex);
   }
 }
 
@@ -345,6 +345,7 @@ void nextevent(lf_ui_state_t* ui) {
       ui->root->props.color, 
       area, winsize.y);
     ui->render_begin(ui->render_state);
+    ui->render_resize_display(ui->render_state, winsize.x, winsize.y);
     renderterminalrows();
     ui->render_end(ui->render_state);
   }
